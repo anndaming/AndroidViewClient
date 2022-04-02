@@ -33,7 +33,7 @@ from com.dtmilano.android.common import profileStart
 from com.dtmilano.android.concertina import Concertina
 from com.dtmilano.android.viewclient import ViewClient
 
-__version__ = '20.5.1'
+__version__ = '20.7.1'
 
 import sys
 import threading
@@ -45,13 +45,14 @@ from pkg_resources import Requirement, resource_filename
 
 try:
     import PIL
-    from PIL import Image, ImageTk
+    from PIL import Image
 
     PIL_AVAILABLE = True
 except:
     PIL_AVAILABLE = False
 
 try:
+    from PIL import ImageTk
     import tkinter
     import tkinter.simpledialog
     import tkinter.filedialog

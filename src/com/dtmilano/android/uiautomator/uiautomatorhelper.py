@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Copyright (C) 2012-2021  Diego Torres Milano
+Copyright (C) 2012-2022  Diego Torres Milano
 Created on Feb 2, 2015
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,7 @@ limitations under the License.
 
 from __future__ import print_function
 
-__version__ = '20.5.1'
+__version__ = '20.7.1'
 
 import json
 import os
@@ -33,7 +33,7 @@ import time
 from abc import ABC
 
 import culebratester_client
-from culebratester_client import Text, ObjectRef
+from culebratester_client import Text, ObjectRef, StatusResponse
 
 from com.dtmilano.android.adb.adbclient import AdbClient
 from com.dtmilano.android.common import obtainAdbPath
@@ -242,6 +242,13 @@ class UiAutomatorHelper:
             :return: the display real size
             """
             return self.uiAutomatorHelper.api_instance.device_display_real_size_get()
+
+        def wait_for_new_toast(self, timeout=10000):
+            """
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :return: the text in the Toast if found
+            """
+            return self.uiAutomatorHelper.api_instance.device_wait_for_new_toast_get(timeout=timeout)
 
     def getDisplayRealSize(self):
         """
@@ -473,6 +480,18 @@ class UiAutomatorHelper:
             """
             return self.uiAutomatorHelper.api_instance.ui_object2_oid_click_get(oid=oid)
 
+        def click_and_wait(self, oid: int, event_condition_ref, timeout=10000) -> StatusResponse:
+            """
+            Clicks and wait.
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param oid: the oid
+            :param event_condition_ref: the event condition
+            :param timeout: the timeout
+            :return: the status response
+            """
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_click_and_wait_get(oid, event_condition_ref,
+                                                                                         timeout=timeout)
+
         def dump(self, oid):
             """
             Dumps the content of an object.
@@ -489,7 +508,7 @@ class UiAutomatorHelper:
             :param oid: the oid
             :return: the text
             """
-            return self.uiAutomatorHelper.api_instance.ui_object2_get_text_get(oid=oid)
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_get_text_get(oid=oid)
 
         def long_click(self, oid):
             """
@@ -508,7 +527,7 @@ class UiAutomatorHelper:
             :param text: the text
             :return: the result of the operation
             """
-            return self.uiAutomatorHelper.api_instance.ui_object2_set_text_post(oid=oid, body=Text(text))
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_set_text_post(oid=oid, body=Text(text))
 
     #
     # Until
@@ -518,7 +537,22 @@ class UiAutomatorHelper:
             super().__init__(uiAutomatorHelper)
 
         def find_object(self, by_selector: str) -> ObjectRef:
+            """
+            Returns a SearchCondition that is satisfied when at least one element matching the selector can be found.
+            The condition will return the first matching element.
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param by_selector: the selector
+            :return: the search condition reference
+            """
             return self.uiAutomatorHelper.api_instance.until_find_object_get(by_selector=by_selector)
+
+        def new_window(self) -> ObjectRef:
+            """
+            Returns a condition that depends on a new window having appeared.
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :return: the event condition reference
+            """
+            return self.uiAutomatorHelper.api_instance.until_new_window_get()
 
     def click(self, **kwargs):
         """
