@@ -21,14 +21,17 @@ limitations under the License.
 from __future__ import print_function
 
 import json
+from typing import Optional, Union, Dict
 
+import culebratester_client
 from culebratester_client import WindowHierarchyChild, WindowHierarchy
 
-__version__ = '20.9.1'
+__version__ = '21.16.9'
 
 import sys
 import warnings
 
+import com.dtmilano.android.keyevent
 from com.dtmilano.android.adb.adbclient import AdbClient
 
 if sys.executable:
@@ -77,11 +80,13 @@ DEBUG_CHANGE_LANGUAGE = DEBUG and False
 DEBUG_UI_AUTOMATOR = DEBUG and False
 DEBUG_UI_AUTOMATOR_HELPER = DEBUG and False
 DEBUG_NAV_BUTTONS = DEBUG and False
+DEBUG_SELECTOR = DEBUG and False
 
 WARNINGS = False
 
 VIEW_SERVER_HOST = 'localhost'
 VIEW_SERVER_PORT = 4939
+CULEBRATESTER2_PORT = 9987
 
 ADB_DEFAULT_PORT = 5555
 
@@ -146,6 +151,8 @@ IP_DOMAIN_NAME_PORT_REGEX = r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[
                             r'(?:/?|[/?]\S+)$'
 IPV6_RE = re.compile('^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$', re.IGNORECASE)
 IPV6_PORT_RE = re.compile(r'^\[(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}\]:\d+$', re.IGNORECASE)
+
+KEY_EVENT = com.dtmilano.android.keyevent.KEY_EVENT
 
 
 class ViewNotFoundException(Exception):
@@ -290,6 +297,7 @@ class View:
         ''' Is this a touch target zone '''
         self.uiAutomatorHelper = uiAutomatorHelper
         ''' The UiAutomatorHelper '''
+        self.ui_automator_helper_node: Optional[WindowHierarchyChild] = None
 
         if version != -1:
             self.build[VERSION_SDK_PROPERTY] = version
@@ -715,7 +723,7 @@ class View:
         ''' Hierarchy accumulated Y '''
 
         if DEBUG_COORDS: print("   getXY: not using UiAutomator, calculating parent coordinates", file=sys.stderr)
-        while parent != None:
+        while parent is not None:
             if DEBUG_COORDS: print("      getXY: parent: %s %s <<<<" % (parent.getClass(), parent.getId()),
                                    file=sys.stderr)
             if SKIP_CERTAIN_CLASSES_IN_GET_XY_ENABLED:
@@ -778,7 +786,7 @@ class View:
                   file=sys.stderr)
             print("                     x=%d+%d+%d+%d" % (x, hx, wvx, pwx), file=sys.stderr)
             print("                     y=%d+%d+%d-%d+%d" % (y, hy, wvy, statusBarOffset, pwy), file=sys.stderr)
-        return (x + hx + wvx + pwx, y + hy + wvy - statusBarOffset + pwy)
+        return x + hx + wvx + pwx, y + hy + wvy - statusBarOffset + pwy
 
     def getCoords(self):
         '''
@@ -793,24 +801,24 @@ class View:
         (x, y) = self.getXY()
         w = self.getWidth()
         h = self.getHeight()
-        return ((x, y), (x + w, y + h))
+        return (x, y), (x + w, y + h)
 
     def getPositionAndSize(self):
-        '''
+        """
         Gets the position and size (X,Y, W, H)
 
         @return: A tuple containing the View's coordinates (X, Y, W, H)
-        '''
+        """
 
         (x, y) = self.getXY()
         w = self.getWidth()
         h = self.getHeight()
-        return (x, y, w, h)
+        return x, y, w, h
 
     def getBounds(self):
-        '''
+        """
         Gets the View bounds
-        '''
+        """
 
         if isinstance(self, WindowHierarchyChild):
             return self.bounds
@@ -820,16 +828,16 @@ class View:
             return self.getCoords()
 
     def getCenter(self):
-        '''
+        """
         Gets the center coords of the View
 
         @author: U{Dean Morin <https://github.com/deanmorin>}
-        '''
+        """
 
         (left, top), (right, bottom) = self.getCoords()
         x = left + (right - left) / 2
         y = top + (bottom - top) / 2
-        return (x, y)
+        return x, y
 
     def __obtainStatusBarDimensionsIfVisible(self):
         sbw = 0
@@ -846,7 +854,7 @@ class View:
                     sbh = w.wvh
                 break
 
-        return (sbw, sbh)
+        return sbw, sbh
 
     def __obtainVxVy(self, m):
         return obtainVxVy(m)
@@ -958,19 +966,19 @@ class View:
 
         if self.windowId and self.windowId in self.windows and self.windows[self.windowId].visibility == 0:
             w = self.windows[self.windowId]
-            return (w.wvx, w.wvy)
+            return w.wvx, w.wvy
         elif self.currentFocus in self.windows and self.windows[self.currentFocus].visibility == 0:
             if DEBUG_COORDS or debug:
                 print("__dumpWindowsInformation: focus=", self.currentFocus, file=sys.stderr)
                 print("__dumpWindowsInformation:", self.windows[self.currentFocus], file=sys.stderr)
             w = self.windows[self.currentFocus]
-            return (w.wvx, w.wvy)
+            return w.wvx, w.wvy
         else:
             if DEBUG_COORDS: print("__dumpWindowsInformation: (0,0)", file=sys.stderr)
-            return (0, 0)
+            return 0, 0
 
     def touch(self, eventType=adbclient.DOWN_AND_UP, deltaX=0, deltaY=0):
-        '''
+        """
         Touches the center of this C{View}. The touch can be displaced from the center by
         using C{deltaX} and C{deltaY} values.
 
@@ -980,9 +988,9 @@ class View:
         @type deltaX: int
         @param deltaY: Displacement from center (Y axis)
         @type deltaY: int
-        '''
+        """
 
-        (x, y) = self.getCenter()
+        x, y = self.getCenter()
         if deltaX:
             x += deltaX
         if deltaY:
@@ -997,26 +1005,25 @@ class View:
             self.device.touch(x + 10, y + 10, eventType=adbclient.UP)
         else:
             if self.uiAutomatorHelper:
-                selector = self.obtainSelectorForView()
+                selector = self.obtain_selector()
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print('using selector="%s"' % selector, file=sys.stderr)
                 if selector:
                     try:
-                        object_ref = self.uiAutomatorHelper.findObject(by_selector=selector)
+                        object_ref = self.uiAutomatorHelper.ui_device.find_object(body=selector)
                         if DEBUG_UI_AUTOMATOR_HELPER:
-                            print("id=%d" % object_ref.oid, file=sys.stderr)
-                            print("ignoring click delta to click View as UiObject", file=sys.stderr)
-                        self.uiAutomatorHelper.click(oid=object_ref.oid)
+                            print("oid=%d" % object_ref.oid, file=sys.stderr)
+                        self.uiAutomatorHelper.ui_object2.click(oid=object_ref.oid)
                     except RuntimeError as e:
-                        print(e.message, file=sys.stderr)
-                        print("UiObject click failed, using co-ordinates", file=sys.stderr)
-                        self.uiAutomatorHelper.click(x=x, y=y)
+                        print(e, file=sys.stderr)
+                        print("UiObject2 click failed, falling back to coordinates", file=sys.stderr)
+                        self.uiAutomatorHelper.ui_device.click(x=x, y=y)
                 else:
                     # FIXME:
                     # The View has no CD, TEXT or ID so we cannot use it in a selector to findObject()
                     # We should try content description, text, and perhaps other properties before surrendering.
                     # For now, tet's fall back to click(x, y)
-                    self.uiAutomatorHelper.click(x=x, y=y)
+                    self.uiAutomatorHelper.ui_device.click(x=x, y=y)
             else:
                 self.device.touch(x, y, eventType=eventType)
 
@@ -1037,22 +1044,59 @@ class View:
             selector += 'res@' + self.escapeSelectorChars(self.getId())
         return selector
 
+    def obtain_selector(self) -> Optional[culebratester_client.Selector]:
+        """
+        Obtains a Selector for this View.
+
+        :return: the Selector or None if the most important values (e.g. text, res, etc.) are not present
+        """
+        if DEBUG_SELECTOR:
+            print(f'obtain_selector: view={self}', file=sys.stderr)
+        selector = culebratester_client.Selector()
+        selector.desc = self.getContentDescription()
+        selector.text = self.getText()
+        res = self.getId()
+        selector.res = res if res else None
+        selector.clazz = self.getClass()
+        selector.pkg = self.getPackage()
+        selector.clickable = self.isClickable()
+        selector.checkable = self.isCheckable()
+        if selector.desc or selector.text or selector.res or selector.clazz:
+            # If we have some of these values let's return the selector
+            return selector
+        return None
+
     def longTouch(self, duration=2000):
-        '''
+        """
         Long touches this C{View}
 
         @param duration: duration in ms
-        '''
+        """
+
+        x, y = self.getCenter()
 
         if self.uiAutomatorHelper:
-            # FIXME: is `selector` a `bySlector`?
-            object_ref = self.uiAutomatorHelper.findObject(by_selector=self.obtainSelectorForView())
+            selector = self.obtain_selector()
             if DEBUG_UI_AUTOMATOR_HELPER:
-                print("♦️ object_ref=%s" % object_ref, file=sys.stderr)
-            self.uiAutomatorHelper.longClick(oid=object_ref.oid)
+                print('using selector="%s"' % selector, file=sys.stderr)
+            if selector:
+                try:
+                    object_ref = self.uiAutomatorHelper.ui_device.find_object(body=selector)
+                    if DEBUG_UI_AUTOMATOR_HELPER:
+                        print("♦️ object_ref=%s" % object_ref, file=sys.stderr)
+                    self.uiAutomatorHelper.ui_object2.long_click(oid=object_ref.oid)
+                except RuntimeError as e:
+                    print(e, file=sys.stderr)
+                    print("UiObject2 click failed, falling back to coordinates", file=sys.stderr)
+                    self.uiAutomatorHelper.ui_device.click(x=x, y=y)
+            else:
+                # FIXME:
+                # The View has no CD, TEXT or ID so we cannot use it in a selector to findObject()
+                # We should try content description, text, and perhaps other properties before surrendering.
+                # For now, tet's fall back to click(x, y)
+                self.uiAutomatorHelper.ui_device.click(x=x, y=y)
         else:
             # FIXME: get orientation
-            (x, y) = self.getCenter()
             self.device.longTouch(x, y, duration, orientation=-1)
 
     def allPossibleNamesWithColon(self, name):
@@ -1155,10 +1199,10 @@ class View:
         if self.uiAutomatorHelper:
             if DEBUG_UI_AUTOMATOR_HELPER:
                 print("Taking screenshot using UiAutomatorHelper", file=sys.stderr)
-            received = self.uiAutomatorHelper.takeScreenshot()
-            stream = io.StringIO(received)
+            received = self.uiAutomatorHelper.ui_device.take_screenshot()
+            stream = io.BytesIO(received.read())
             try:
-                from pillow import Image
+                from PIL import Image
                 image = Image.open(stream)
             except ImportError as ex:
                 # FIXME: this method should be global
@@ -2459,11 +2503,14 @@ class ViewClientOptions:
     SERIALNO = 'serialno'
     AUTO_DUMP = 'autodump'
     FORCE_VIEW_SERVER_USE = 'forceviewserveruse'
-    LOCAL_PORT = 'localport'  # ViewServer local port
-    REMOTE_PORT = 'remoteport'  # ViewServer remote port
+    LOCAL_PORT = 'localport'  # ViewServer or CulebraTester2-public local port
+    REMOTE_PORT = 'remoteport'  # ViewServer  or CulebraTester2-public remote port
     START_VIEW_SERVER = 'startviewserver'
     IGNORE_UIAUTOMATOR_KILLED = 'ignoreuiautomatorkilled'
     COMPRESSED_DUMP = 'compresseddump'
+    # NOTICE: there are 2 constants referring to UiAutomatorHelper (i.e. CulebraTester2-public) option,
+    # this one and the other at CulebraOptions.USE_UI_AUTOMATOR_HELPER.
+    # The other one in kebab-case is for the command line option while this one is a method argument name
     USE_UIAUTOMATOR_HELPER = 'useuiautomatorhelper'
 
 
@@ -2490,7 +2537,7 @@ class ViewClient:
 
     UiAutomatorHelper backend
     =========================
-    Requires B{Culebra Tester} installed on Android device.
+    Requires B{CulebraTester2-public} installed on Android device.
     '''
 
     osName = platform.system()
@@ -2501,8 +2548,8 @@ class ViewClient:
     imageDirectory = None
     ''' The directory used to store screenshot images '''
 
-    def __init__(self, device, serialno, adb=None, autodump=True, forceviewserveruse=False, localport=VIEW_SERVER_PORT,
-                 remoteport=VIEW_SERVER_PORT, startviewserver=True, ignoreuiautomatorkilled=False, compresseddump=True,
+    def __init__(self, device, serialno, adb=None, autodump=True, forceviewserveruse=False, localport=None,
+                 remoteport=None, startviewserver=True, ignoreuiautomatorkilled=False, compresseddump=True,
                  useuiautomatorhelper=False, debug={}):
         '''
         Constructor
@@ -2546,9 +2593,15 @@ class ViewClient:
         self.uiAutomatorHelper = None
         ''' The UiAutomatorHelper '''
 
+        self.ui_automator_helper_dump: Optional[WindowHierarchy] = None
+
         if useuiautomatorhelper:
             self.useUiAutomator = True
-            self.uiAutomatorHelper = UiAutomatorHelper(device)
+            if not localport:
+                localport = CULEBRATESTER2_PORT
+            if not remoteport:
+                remoteport = CULEBRATESTER2_PORT
+            self.uiAutomatorHelper = UiAutomatorHelper(device, localport=localport, remoteport=remoteport)
             # we might return here if all the dependencies to `adb` commands were removed when uiAutomatorHelper is used
             # return
 
@@ -2630,7 +2683,7 @@ class ViewClient:
         self.forceViewServerUse = forceviewserveruse
         ''' Force the use of ViewServer even if the conditions to use UiAutomator are satisfied '''
         self.useUiAutomator = self.uiAutomatorHelper or (
-                    self.build[VERSION_SDK_PROPERTY] >= 16) and not forceviewserveruse  # jelly bean 4.1 & 4.2
+                self.build[VERSION_SDK_PROPERTY] >= 16) and not forceviewserveruse  # jelly bean 4.1 & 4.2
         if DEBUG:
             print("    ViewClient.__init__: useUiAutomator=", self.useUiAutomator, "sdk=",
                   self.build[VERSION_SDK_PROPERTY], "forceviewserveruse=", forceviewserveruse, file=sys.stderr)
@@ -2666,6 +2719,10 @@ class ViewClient:
                               '    ro.debuggable=%s\n' % (self.ro['secure'], self.ro['debuggable'])
                         raise Exception(msg)
 
+            if not localport:
+                localport = VIEW_SERVER_PORT
+            if not remoteport:
+                remoteport = VIEW_SERVER_PORT
             self.localPort = localport
             self.remotePort = remoteport
             # FIXME: it seems there's no way of obtaining the serialno from the MonkeyDevice
@@ -3302,9 +3359,8 @@ class ViewClient:
         self.__processWindowHierarchyChild(self.root, idCount, version)
 
     @staticmethod
-    # python 3
-    # def __attributesFromWindowHierarchyChild(unique_id, child: WindowHierarchyChild):
-    def __attributesFromWindowHierarchyChild(child):
+    def attributesFromWindowHierarchyChild(unique_id: str, child: WindowHierarchyChild) -> \
+            Dict[str, Union[int, str, bool]]:
         bounds = ((int(child.bounds[0]), int(child.bounds[1])), (int(child.bounds[2]), int(child.bounds[3])))
         return {'index': child.index, 'text': child.text, 'resource-id': child.resource_id, 'class': child.clazz,
                 'package': child.package, 'content-desc': child.content_description, 'checkable': child.checkable,
@@ -3313,17 +3369,18 @@ class ViewClient:
                 'focused': child.focused,
                 'scrollable': child.scrollable, 'long-clickable': child.long_clickable,
                 'password': child.password, 'selected': child.selected, 'bounds': bounds,
-                'uniqueId': child.unique_id}
+                'uniqueId': unique_id}
 
-    def __processWindowHierarchyChild(self, node, idCount, version):
+    def __processWindowHierarchyChild(self, node: Union[WindowHierarchy, WindowHierarchyChild], idCount: int,
+                                      version) -> None:
         if node.id != 'hierarchy':
-            # FIXME: as WindowHierarchyChild is generated we may need a descendant
-            # NOTE: we are extending WindowHierarchyChild adding unique_id
-            node.unique_id = 'id/no_id/%d' % idCount
-            attributes = ViewClient.__attributesFromWindowHierarchyChild(node)
-            view = View.factory(attributes, self.device, version=version, uiAutomatorHelper=self.uiAutomatorHelper)
-            self.views.append(view)
+            unique_id = f'fid/no_id/{idCount}'
+            attributes = ViewClient.attributesFromWindowHierarchyChild(unique_id, node)
+            view: View = View.factory(attributes, self.device, version=version,
+                                      uiAutomatorHelper=self.uiAutomatorHelper)
+            view.ui_automator_helper_node = node
             idCount += 1
+            self.views.append(view)
         for ch in node.children:
             self.__processWindowHierarchyChild(ch, idCount, version)
 
@@ -3433,6 +3490,7 @@ class ViewClient:
         if self.useUiAutomator:
             if self.uiAutomatorHelper:
                 received = self.uiAutomatorHelper.ui_device.dump_window_hierarchy()
+                self.ui_automator_helper_dump = received
             else:
                 api = self.getSdkVersion()
                 if api >= 24:
@@ -4041,7 +4099,7 @@ class ViewClient:
         if self.uiAutomatorHelper:
             if DEBUG_UI_AUTOMATOR_HELPER:
                 print("Finding object with %s through UiAutomatorHelper" % kwargs, file=sys.stderr)
-            return self.uiAutomatorHelper.findObject(**kwargs)
+            return self.uiAutomatorHelper.ui_device.find_object(**kwargs)
         else:
             warnings.warn("findObject only implemented using UiAutomatorHelper. Use ViewClient.findView...() instead.")
             return None
@@ -4064,14 +4122,14 @@ class ViewClient:
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print("Touching View by selector=%s through UiAutomatorHelper" % selector, file=sys.stderr)
                 # FIXME: is `selector` a `bySlector`?
-                object_ref = self.uiAutomatorHelper.findObject(by_selector=selector)
+                object_ref = self.uiAutomatorHelper.ui_device.find_object(by_selector=selector)
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print("♦️ object_ref=%s" % object_ref, file=sys.stderr)
                 self.uiAutomatorHelper.click(oid=object_ref.oid)
             else:
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print("Touching (%d, %d) through UiAutomatorHelper" % (x, y), file=sys.stderr)
-                self.uiAutomatorHelper.click(x=int(x), y=int(y))
+                self.uiAutomatorHelper.ui_device.click(x=int(x), y=int(y))
         else:
             self.device.touch(x, y)
 
@@ -4081,15 +4139,17 @@ class ViewClient:
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print("ViewClient: Long-touching View by selector=%s through UiAutomatorHelper" % (selector),
                           file=sys.stderr)
-                self.uiAutomatorHelper.findObject(selector=selector).longClick()
+                oid_ref = self.uiAutomatorHelper.ui_device.find_object(by_selector=selector)
+                self.uiAutomatorHelper.ui_object2.long_click(oid=oid_ref.oid)
             else:
                 if DEBUG_UI_AUTOMATOR_HELPER:
                     print("ViewClient: Long-touching (%d, %d) through UiAutomatorHelper" % (x, y), file=sys.stderr)
-                self.uiAutomatorHelper.swipe(startX=int(x), startY=int(y), endX=int(x), endY=int(y), steps=400)
+                self.uiAutomatorHelper.ui_device.swipe(start_x=int(x), start_y=int(y), end_x=int(x), end_y=int(y),
+                                                       steps=400)
         else:
             self.device.longTouch(x, y)
 
-    def swipe(self, startX=-1, startY=-1, endX=-1, endY=-1, steps=400, segments=[], segmentSteps=5, start=None,
+    def swipe(self, startX=-1, startY=-1, endX=-1, endY=-1, steps=400, segments=None, segmentSteps=5, start=None,
               end=None):
         if startX == -1 and startY == -1 and start:
             startX = start[0]
@@ -4101,36 +4161,38 @@ class ViewClient:
             if DEBUG_UI_AUTOMATOR_HELPER:
                 print("Swipe through UiAutomatorHelper", (startX, startY, endX, endY, steps, segments, segmentSteps),
                       file=sys.stderr)
-            self.uiAutomatorHelper.swipe(startX=startX, startY=startY, endX=endX, endY=endY, steps=steps,
-                                         segments=segments, segmentSteps=segmentSteps)
+            if segments:
+                warnings.warn("Not implemented yet")
+                return
+            self.uiAutomatorHelper.ui_device.swipe(start_x=startX, start_y=startY, end_x=endX, end_y=endY, steps=steps)
         else:
             duration = steps / 2.0
             self.device.drag((startX, startY), (endX, endY), duration, steps)
 
     def pressBack(self):
         if self.uiAutomatorHelper:
-            self.uiAutomatorHelper.pressBack()
+            self.uiAutomatorHelper.ui_device.press_back()
         else:
             warnings.warn("pressBak only implemented using UiAutomatorHelper.  Use AdbClient.type() instead")
 
     def pressHome(self):
         if self.uiAutomatorHelper:
-            self.uiAutomatorHelper.pressHome()
+            self.uiAutomatorHelper.ui_device.press_home()
         else:
             warnings.warn("pressHome only implemented using UiAutomatorHelper.  Use AdbClient.type() instead")
 
     def pressRecentApps(self):
         if self.uiAutomatorHelper:
-            self.uiAutomatorHelper.pressRecentApps()
+            self.uiAutomatorHelper.ui_device.press_recent_apps()
         else:
             warnings.warn("pressRecentApps only implemented using UiAutomatorHelper.  Use AdbClient.type() instead")
 
     def pressKeyCode(self, keycode, metaState=0):
-        '''By default no meta state'''
+        """By default no meta state"""
         if self.uiAutomatorHelper:
             if DEBUG_UI_AUTOMATOR_HELPER:
                 print("pressKeyCode(%d, %d)" % (keycode, metaState), file=sys.stderr)
-            self.uiAutomatorHelper.pressKeyCode(keycode, metaState)
+            self.uiAutomatorHelper.ui_device.press_key_code(keycode, metaState)
         else:
             warnings.warn("pressKeyCode only implemented using UiAutomatorHelper.  Use AdbClient.type() instead")
 
@@ -4140,15 +4202,10 @@ class ViewClient:
         if self.uiAutomatorHelper:
             if DEBUG_UI_AUTOMATOR_HELPER:
                 print("Setting text through UiAutomatorHelper for View with ID=%s" % v.getId(), file=sys.stderr)
-            if v.getId():
-                oid = self.uiAutomatorHelper.findObject(selector='res@%s' % v.getId())
-                if DEBUG_UI_AUTOMATOR_HELPER:
-                    print("oid=", oid, "text=", text, file=sys.stderr)
-                self.uiAutomatorHelper.setText(oid, text)
-            else:
-                # The View has no ID so we cannot use the ID to create a selector to find it using findObject()
-                # Let's fall back to this method.
-                v.setText(text)
+            selector = v.obtain_selector()
+            obj_ref = self.uiAutomatorHelper.until.find_object(body=selector)
+            response = self.uiAutomatorHelper.ui_device.wait(obj_ref.oid)
+            self.uiAutomatorHelper.ui_object2.set_text(response['oid'], text)
         else:
             # This is deleting the existing text, which should be asked in the dialog, but I would have to implement
             # the dialog myself
@@ -4667,12 +4724,16 @@ class CulebraOptions:
     DROP_SHADOW = 'drop-shadow'
     SCREEN_GLARE = 'glare'
     NULL_BACK_END = 'null-back-end'
+    # NOTICE: there are 2 constants referring to UiAutomatorHelper (i.e CulebraTester2-public) option,
+    # this one and the other at ViewClientOptions.USE_UI_AUTOMATOR_HELPER.
+    # This one in kebab-case is for the command line option
     USE_UIAUTOMATOR_HELPER = 'use-uiautomator-helper'
     CONCERTINA = 'concertina'
     CONCERTINA_CONFIG = 'concertina-config'
     INSTALL_APK = 'install-apk'
+    AUTO_SCREENSHOTS = 'auto-screenshots'
 
-    SHORT_OPTS = 'HVvIEFSkw:i:t:d:rCUM:j:D:K:R:a:o:pf:W:GuP:Os:mLA:ZB0hcJ:1:X:'
+    SHORT_OPTS = 'HVvIEFSkw:i:t:d:rCUM:j:D:K:R:a:o:pf:W:GuP:Os:mLA:ZB0hcJ:1:X:y'
     LONG_OPTS = [HELP, VERBOSE, VERSION, IGNORE_SECURE_DEVICE, IGNORE_VERSION_CHECK, FORCE_VIEW_SERVER_USE,
                  DO_NOT_START_VIEW_SERVER,
                  DO_NOT_IGNORE_UIAUTOMATOR_KILLED,
@@ -4697,6 +4758,7 @@ class CulebraOptions:
                  CONCERTINA_CONFIG + '=',
                  INSTALL_APK + '=',
                  'debug' + '=',
+                 AUTO_SCREENSHOTS
                  ]
     LONG_OPTS_ARG = {WINDOW: 'WINDOW',
                      FIND_VIEWS_BY_ID: 'BOOL', FIND_VIEWS_WITH_TEXT: 'BOOL',
@@ -4722,6 +4784,7 @@ class CulebraOptions:
         't': 'whether to use findViewWithText() in script',
         'd': 'whether to use findViewWithContentDescription',
         'r': 'use regexps in matches',
+        'C': 'generates verbose comments',
         'U': 'generates unit test class and script',
         'M': 'generates unit test method. Can be used with or without -U',
         'j': 'use jar and appropriate shebang to run script (deprecated)',
@@ -4750,11 +4813,12 @@ class CulebraOptions:
         'J': 'concertina config file (JSON)',
         '1': 'install APK as precondition (use with -U)',
         'X': 'debug options',
+        'y': 'auto screenshots'
     }
 
 
 class CulebraTestCase(unittest.TestCase):
-    '''
+    """
     The base class for all CulebraTests.
 
     Class variables
@@ -4774,7 +4838,7 @@ class CulebraTestCase(unittest.TestCase):
 
     B{verbose}: The verbosity of the tests. This can be changed from the test command line using the
     command line option C{-v} or C{--verbose}.
-    '''
+    """
 
     kwargs1 = None
     kwargs2 = None
@@ -4790,6 +4854,8 @@ class CulebraTestCase(unittest.TestCase):
     ''' The default connected device '''
     vc = None
     ''' The default connected device C{ViewClient} '''
+    helper = None
+    ''' The UiAutomatoHelper instance if enabled'''
     verbose = False
     options = {}
 
@@ -4797,11 +4863,11 @@ class CulebraTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls.kwargs1 = {'ignoreversioncheck': False, 'verbose': False, 'ignoresecuredevice': False}
         cls.kwargs2 = {'startviewserver': False, 'forceviewserveruse': False, 'autodump': False,
-                       'ignoreuiautomatorkilled': True}
+                       'ignoreuiautomatorkilled': True, ViewClientOptions.USE_UIAUTOMATOR_HELPER: False}
 
     @classmethod
     def tearDownClass(cls):
-        if 'useuiautomatorhelper' in cls.kwargs2 and cls.kwargs2['useuiautomatorhelper']:
+        if cls.kwargs2.get(ViewClientOptions.USE_UIAUTOMATOR_HELPER, False):
             for d in cls.globalDevices:
                 d.vc.uiAutomatorHelper.quit()
 
@@ -4842,14 +4908,15 @@ class CulebraTestCase(unittest.TestCase):
             except:
                 pass
 
-        if 'useuiautomatorhelper' in self.kwargs2 and self.kwargs2.get('useuiautomatorhelper'):
+        if self.kwargs2.get(ViewClientOptions.USE_UIAUTOMATOR_HELPER, False):
             # FIXME: we could find better alternatives for device and serialno when UiAutomatorHelper is used
-            # Searialno could be obtained form UiAutomatorHelper too.
+            # Serialno could be obtained form UiAutomatorHelper too.
             self.vc = ViewClient("UI_AUTOMATOR_HELPER_DEVICE", "UI_AUTOMATOR_HELPER_SERIALNO", **self.kwargs2)
+            self.helper = self.vc.uiAutomatorHelper
             return
 
         if self.serialno:
-            # serialno can be 1 serialno, multiple serialnos, 'all' or 'default'
+            # serialno can be 1 serialno, multiple serialno's, 'all' or 'default'
             if self.serialno.lower() == 'all':
                 __devices = [d.serialno for d in adbclient.AdbClient().getDevices()]
             elif self.serialno.lower() == 'default':
@@ -4869,26 +4936,30 @@ class CulebraTestCase(unittest.TestCase):
                     # FIXME: we are not considering the uiAutomatorHelper case
                     # see if in lines 4832..4836
                     device.startActivity(component=self.options[CulebraOptions.START_ACTIVITY])
-                vc = ViewClient(device, serialno, **self.kwargs2)
-                connectedDevice = ConnectedDevice(serialno=serialno, device=device, vc=vc)
+                _vc = ViewClient(device, serialno, **self.kwargs2)
+                connectedDevice = ConnectedDevice(serialno=serialno, device=device, vc=_vc)
                 self.devices.append(connectedDevice)
                 CulebraTestCase.globalDevices.append(connectedDevice)
-            # Select the first devices as default
+            # Select the first device as default
             self.defaultDevice = self.devices[0]
             self.device = self.defaultDevice.device
             self.serialno = self.defaultDevice.serialno
             self.vc = self.defaultDevice.vc
+            if self.options.get(ViewClientOptions.USE_UIAUTOMATOR_HELPER, False):
+                self.helper = self.vc.uiAutomatorHelper
         else:
             self.devices = []
             if __devices:
                 # A list containing only one device was specified
                 self.serialno = __devices[0]
             self.device, self.serialno = ViewClient.connectToDeviceOrExit(serialno=self.serialno, **self.kwargs1)
-            if CulebraOptions.START_ACTIVITY in self.options and self.options[CulebraOptions.START_ACTIVITY]:
+            if self.options.get(CulebraOptions.START_ACTIVITY, None):
                 # FIXME: we are not considering the uiAutomatorHelper case
                 # see if in lines 4832..4836
                 self.device.startActivity(component=self.options[CulebraOptions.START_ACTIVITY])
             self.vc = ViewClient(self.device, self.serialno, **self.kwargs2)
+            if self.options.get(ViewClientOptions.USE_UIAUTOMATOR_HELPER, False):
+                self.helper = self.vc.uiAutomatorHelper
             # Set the default device, to be consistent with multi-devices case
             connectedDevice = ConnectedDevice(serialno=self.serialno, device=self.device, vc=self.vc)
             self.devices.append(connectedDevice)
@@ -4906,13 +4977,13 @@ class CulebraTestCase(unittest.TestCase):
         return True
 
     def isTestRunningOnMultipleDevices(self):
-        return (len(self.devices) > 1)
+        return len(self.devices) > 1
 
     @staticmethod
     def __passAll(arg):
         return True
 
-    def all(self, arg, _filter=None):
+    def all(self, arg, _filter=None) -> list:
         # CulebraTestCase.__passAll cannot be specified as the default argument value
         if _filter is None:
             _filter = CulebraTestCase.__passAll
@@ -4923,13 +4994,13 @@ class CulebraTestCase(unittest.TestCase):
                 print("    i=", i, file=sys.stderr)
         return list(filter(_filter, (getattr(d, arg) for d in self.devices)))
 
-    def allVcs(self, _filter=None):
+    def allVcs(self, _filter=None) -> list:
         return self.all('vc', _filter)
 
-    def allDevices(self, _filter=None):
+    def allDevices(self, _filter=None) -> list:
         return self.all('device', _filter)
 
-    def allSerialnos(self, _filter=None):
+    def allSerialnos(self, _filter=None) -> list:
         return self.all('serialno', _filter)
 
     def log(self, message, priority='D'):

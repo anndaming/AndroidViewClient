@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Copyright (C) 2012-2019  Diego Torres Milano
+Copyright (C) 2012-2022  Diego Torres Milano
 Created on oct 6, 2014
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,16 +24,20 @@ import io
 import random
 import re
 import time
+from tkinter.filedialog import asksaveasfilename
+from typing import Any, Optional
 
 import numpy
 from culebratester_client import WindowHierarchy
 
+from com.dtmilano.android.adb.adbclient import AdbClient
 from com.dtmilano.android.common import profileEnd
 from com.dtmilano.android.common import profileStart
 from com.dtmilano.android.concertina import Concertina
-from com.dtmilano.android.viewclient import ViewClient
+from com.dtmilano.android.keyevent import KEY_EVENT
+from com.dtmilano.android.viewclient import ViewClient, View, VERSION_SDK_PROPERTY
 
-__version__ = '20.9.1'
+__version__ = '21.16.9'
 
 import sys
 import threading
@@ -80,6 +84,7 @@ from ast import literal_eval as make_tuple
 
 CHECK_KEYBOARD_SHOWN = False
 PROFILE = False
+TIMING = False
 
 DEBUG = False
 DEBUG_MOVE = DEBUG and False
@@ -110,14 +115,17 @@ class Unit:
 class Operation:
     ASSIGN = 'assign'
     CHANGE_LANGUAGE = 'change_language'
+    CLICK_UI_AUTOMATOR_HELPER = 'click_ui_automator_helper'
     DEFAULT = 'default'
     DRAG = 'drag'
     DUMP = 'dump'
+    DUMP_UI_AUTOMATOR_HELPER = 'dum_ui_automator_helper'
     FLING_BACKWARD = 'fling_backward'
     FLING_FORWARD = 'fling_forward'
     FLING_TO_BEGINNING = 'fling_to_beginning'
     FLING_TO_END = 'fling_to_end'
     TEST = 'test'
+    TEST_UI_AUTOMATOR_HELPER = 'test_ui_automator_helper'
     TEST_TEXT = 'test_text'
     TOUCH_VIEW = 'touch_view'
     TOUCH_VIEW_UI_AUTOMATOR_HELPER = 'touch_view_ui_automator_helper'
@@ -130,6 +138,7 @@ class Operation:
     OPEN_QUICK_SETTINGS = 'open_quick_settings'
     TYPE = 'type'
     PRESS = 'press'
+    PRESS_UI_AUTOMATOR_HELPER = 'press_ui_automator_helper'
     PRESS_BACK = 'press_back'
     PRESS_BACK_UI_AUTOMATOR_HELPER = 'press_back_ui_automator_helper'
     PRESS_HOME = 'press_home'
@@ -138,12 +147,19 @@ class Operation:
     PRESS_RECENT_APPS_UI_AUTOMATOR_HELPER = 'press_recent_apps_ui_automator_helper'
     SAY_TEXT = 'say_text'
     SET_TEXT = 'set_text'
+    SET_TEXT_UI_AUTOMATOR_HELPER = 'set_text_ui_automator_helper'
     SNAPSHOT = 'snapshot'
+    SNAPSHOT_UI_AUTOMATOR_HELPER = 'snapshot_ui_automator_helper'
     START_ACTIVITY = 'start_activity'
+    START_ACTIVITY_UI_AUTOMATOR_HELPER = 'start_activity_ui_automator__helper'
     SLEEP = 'sleep'
+    SLEEP_UI_AUTOMATOR_HELPER = 'sleep_ui_automator_helper'
     SWIPE_UI_AUTOMATOR_HELPER = 'swipe_ui_automator_helper'
     TRAVERSE = 'traverse'
+    TRAVERSE_UI_AUTOMATOR_HELPER = 'traverse_ui_automator_helper'
     VIEW_SNAPSHOT = 'view_snapshot'
+    WAIT_FOR_IDLE_UI_AUTOMATOR_HELPER = 'wait_for_idle_ui_automator_helper'
+    WAIT_FOR_WINDOW_UPDATE_UI_AUTOMATOR_HELPER = 'wait_for_window_update_ui_automator_helper'
     WAKE = 'wake'
 
     COMMAND_NAME_OPERATION_MAP = {'flingBackward': FLING_BACKWARD, 'flingForward': FLING_FORWARD,
@@ -167,6 +183,7 @@ class Culebron:
 
     KEYSYM_TO_KEYCODE_MAP = {
         'Home': 'HOME',
+        'abovedot': 'HOME',  # Option+H on macOS
         'BackSpace': 'BACK',
         'Left': 'DPAD_LEFT',
         'Right': 'DPAD_RIGHT',
@@ -231,10 +248,12 @@ or, preferred since El Capitan
 This is usually installed by python package. Check your distribution details.
 ''')
 
-    def __init__(self, vc, device, serialno, printOperation, scale=1, concertina=False, concertinaConfigFile=None):
-        '''
+    def __init__(self, vc: ViewClient, device: AdbClient, serialno: str, printOperation: Any, scale: float = 1,
+                 concertina: bool = False, concertinaConfigFile: Optional[str] = None,
+                 autoScreenshots: bool = False):
+        """
         Culebron constructor.
-        
+
         @param vc: The ViewClient used by this Culebron instance. Can be C{None} if no back-end is used.
         @type vc: ViewClient
         @param device: The device
@@ -249,9 +268,11 @@ This is usually installed by python package. Check your distribution details.
         @type concertina: bool
         @param concertinaConfigFile: configuration file for concertina
         @type concertinaConfigFile: str
-        '''
+        :param autoScreenshots: take screenshots automatically
+        """
 
         self.vc = vc
+        self.dump = None
         if 'CONCERTINA' in self.vc.debug:
             global DEBUG_CONCERTINA
             DEBUG_CONCERTINA = self.vc.debug['CONCERTINA'] is not None
@@ -299,6 +320,7 @@ This is usually installed by python package. Check your distribution details.
         self.screenshot = None
         self.iterations = 0
         self.noTargetViewsCount = 0
+        self.autoScreenshots = autoScreenshots
         if DEBUG:
             try:
                 self.printGridInfo()
@@ -317,7 +339,7 @@ This is usually installed by python package. Check your distribution details.
         print("details:", self.viewDetails.grid_info(), file=sys.stderr)
 
     def takeScreenshotAndShowItOnWindow(self):
-        '''
+        """
         Takes the current screenshot and shows it on the main window.
         It also:
          - sizes the window
@@ -327,7 +349,7 @@ This is usually installed by python package. Check your distribution details.
          - create widgets
          - finds the targets (as explained in L{findTargets})
          - hides the vignette (that could have been showed before)
-        '''
+        """
 
         if PROFILE:
             print("PROFILING: takeScreenshotAndShowItOnWindow()", file=sys.stderr)
@@ -335,13 +357,30 @@ This is usually installed by python package. Check your distribution details.
 
         if DEBUG:
             print("takeScreenshotAndShowItOnWindow()", file=sys.stderr)
+        t0 = None
         if self.vc and self.vc.uiAutomatorHelper:
-            received = self.vc.uiAutomatorHelper.takeScreenshot()
-            if sys.version_info[0] < 3:
-                stream = io.StringIO(received)
-            else:
-                stream = io.BytesIO(received.data)
-            self.unscaledScreenshot = Image.open(stream)
+            if self.vc.uiAutomatorHelper:
+                if TIMING:
+                    t0 = time.time()
+                self.vc.uiAutomatorHelper.ui_device.wait_for_window_update()
+                if TIMING:
+                    print(f"# takeScreenshotAndShowItOnWindow: waiting for window update: {time.time() - t0:.2f}s")
+                    t0 = time.time()
+                self.vc.uiAutomatorHelper.ui_device.wait_for_idle()
+                if TIMING:
+                    print(f"# takeScreenshotAndShowItOnWindow: waiting for idle: {time.time() - t0:.2f}s")
+            if TIMING:
+                t0 = time.time()
+            received = self.vc.uiAutomatorHelper.ui_device.take_screenshot()
+            stream = io.BytesIO(received.read())
+            if TIMING:
+                print(f"# takeScreenshotAndShowItOnWindow: screenshot: {time.time() - t0:.2f}s")
+            try:
+                self.unscaledScreenshot = Image.open(stream)
+            except IOError as ex:
+                print(ex, file=sys.stderr)
+                print(repr(stream))
+                sys.exit(1)
         else:
             self.unscaledScreenshot = self.device.takeSnapshot(reconnect=True)
         self.image = self.unscaledScreenshot
@@ -400,6 +439,10 @@ This is usually installed by python package. Check your distribution details.
         try:
             self.findTargets()
             self.hideVignette()
+            if self.autoScreenshots:
+                print(f'Taking screenshot {self.device.screenshot_number}', file=sys.stderr)
+                self.saveSnapshot(showDialog=False)
+
         except Exception as ex:
             print("⛔️ %s" % ex, file=sys.stderr)
         if DEBUG:
@@ -603,15 +646,15 @@ This is usually installed by python package. Check your distribution details.
                 parent_unique_id = parent.getUniqueId()
         except AttributeError:
             vuid = view.unique_id
-            #FIXME
-            #is_target = view.is_target
+            # FIXME
+            # is_target = view.is_target
             is_target = False
             text = view.text
             parent = view.parent
             if parent:
-                #FIXME:
+                # FIXME:
                 # parent is an int
-                #parent_unique_id = parent.unique_id
+                # parent_unique_id = parent.unique_id
                 parent_unique_id = 0
         if parent is None:
             self.viewTree.insert('', tkinter.END, vuid, text=text)
@@ -644,7 +687,8 @@ This is usually installed by python package. Check your distribution details.
             window = -1
         if self.vc:
             dump = self.vc.dump(window=window, sleep=0.1)
-            self.printOperation(None, Operation.DUMP, window, dump)
+            if not self.vc.uiAutomatorHelper:
+                self.printOperation(None, Operation.DUMP, window, dump)
         else:
             dump = []
         self.dump = dump
@@ -674,7 +718,7 @@ This is usually installed by python package. Check your distribution details.
 
         # FIXME: we are not populating the view tree now
         # there are some problems with culebratester2
-        #if self.vc:
+        # if self.vc:
         #    self.vc.traverse(transform=self.populateViewTree)
 
     def getViewContainingPointAndGenerateTestCondition(self, x, y):
@@ -684,13 +728,19 @@ This is usually installed by python package. Check your distribution details.
         vlist = self.vc.findViewsContainingPoint((x, y))
         vlist.reverse()
         for v in vlist:
-            text = v.getText()
-            if text:
-                self.toast('Asserting view with text=%s' % text, timeout=5)
-                # FIXME: only getText() is invoked by the generated assert(), a parameter
-                # should be used to provide different alternatives to printOperation()
-                self.printOperation(v, Operation.TEST, text)
-                break
+            if self.vc.uiAutomatorHelper:
+                selector = v.obtain_selector()
+                if selector:
+                    self.printOperation(v, Operation.TEST_UI_AUTOMATOR_HELPER, selector)
+                    break
+            else:
+                text = v.getText()
+                if text:
+                    self.toast('Asserting view with text=%s' % text, timeout=5)
+                    # FIXME: only getText() is invoked by the generated assert(), a parameter
+                    # should be used to provide different alternatives to printOperation()
+                    self.printOperation(v, Operation.TEST, text)
+                    break
 
     def findViewContainingPointInTargets(self, x, y):
         if self.vc:
@@ -725,7 +775,7 @@ This is usually installed by python package. Check your distribution details.
         if DEBUG_POINT:
             print("getViewsContainingPointAndTouch(x=%s, y=%s)" % (x, y), file=sys.stderr)
             print("self.vc=", self.vc, file=sys.stderr)
-        v = self.findViewContainingPointInTargets(x, y)
+        v: View = self.findViewContainingPointInTargets(x, y)
 
         if v is None:
             self.hideVignette()
@@ -760,8 +810,12 @@ This is usually installed by python package. Check your distribution details.
                 text = tkinter.simpledialog.askstring(title, "Enter text to type into this field", **kwargs)
                 self.canvas.focus_set()
                 if text:
-                    self.vc.setText(v, text)
-                    self.printOperation(v, Operation.SET_TEXT, text)
+                    if self.vc.uiAutomatorHelper:
+                        self.vc.setText(v, text)
+                        self.printOperation(v, Operation.SET_TEXT_UI_AUTOMATOR_HELPER, text)
+                    else:
+                        self.vc.setText(v, text)
+                        self.printOperation(v, Operation.SET_TEXT, text)
                 else:
                     self.hideVignette()
                     return
@@ -778,15 +832,34 @@ This is usually installed by python package. Check your distribution details.
                         candidates.insert(0, view)
                     return None
 
-                if not (v.getText() or v.getContentDescription()) and v.getChildren():
+                if v.ui_automator_helper_node:
+                    for _u, _ch in enumerate(v.ui_automator_helper_node.children, start=-99):
+                        attributes = ViewClient.attributesFromWindowHierarchyChild(f'unique_id/{_u}', _ch)
+                        _v: View = View.factory(attributes, self.device,
+                                                version=self.vc.build[VERSION_SDK_PROPERTY],
+                                                uiAutomatorHelper=self.vc.uiAutomatorHelper)
+                        findBestCandidate(_v)
+
+                if (not (v.getText() or v.getContentDescription())) and v.getChildren():
                     self.vc.traverse(root=v, transform=findBestCandidate, stream=None)
+
                 if len(candidates) > 2:
                     warnings.warn("We are in trouble, we have more than one candidate to touch", stacklevel=0)
+
                 candidate = candidates[0]
                 self.touchView(candidate, v if candidate != v else None)
 
-        self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
-        self.vc.sleep(5)
+        if self.vc.uiAutomatorHelper:
+            self.printOperation(None, Operation.WAIT_FOR_WINDOW_UPDATE_UI_AUTOMATOR_HELPER, Operation.DEFAULT)
+        else:
+            self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
+        # FIXME: we may use sleep() but we may need to differentiate the cases between this and an explicit sleep
+        # self.sleep(5)
+
+        if self.vc.uiAutomatorHelper:
+            self.vc.uiAutomatorHelper.ui_device.wait_for_idle()
+        else:
+            self.vc.sleep(5)
         self.takeScreenshotAndShowItOnWindow()
 
     def pressBack(self):
@@ -814,7 +887,7 @@ This is usually installed by python package. Check your distribution details.
             self.printOperation(None, Operation.PRESS_RECENT_APPS_UI_AUTOMATOR_HELPER)
         else:
             self.printOperation(None, Operation.PRESS_RECENT_APPS)
-        self.vc.sleep(1)
+        self.sleep(1)
         self.takeScreenshotAndShowItOnWindow()
 
     def setText(self, v, text):
@@ -833,21 +906,23 @@ This is usually installed by python package. Check your distribution details.
         ViewClient.sayText(text)
         self.printOperation(None, Operation.SAY_TEXT, text)
 
-    def touchView(self, v, root=None):
+    def touchView(self, v: View, root=None) -> None:
+        # FIXME: v.touch() handles the 2 cases for CulebraTester2-public and adbclient/vc
+        # also, we should obtain the selector only once
         v.touch()
         if v.uiAutomatorHelper:
-            self.printOperation(v, Operation.TOUCH_VIEW_UI_AUTOMATOR_HELPER, v.obtainSelectorForView())
+            self.printOperation(v, Operation.TOUCH_VIEW_UI_AUTOMATOR_HELPER, v.obtain_selector())
         else:
             # we pass root=v as an argument so the corresponding findView*() searches in this
             # subtree instead of the full tree
             self.printOperation(v, Operation.TOUCH_VIEW, root)
 
     def touchPoint(self, x, y):
-        '''
+        """
         Touches a point in the device screen.
         The generated operation will use the units specified in L{coordinatesUnit} and the
         orientation in L{vc.display['orientation']}.
-        '''
+        """
 
         if DEBUG:
             print('touchPoint(%d, %d)' % (x, y), file=sys.stderr)
@@ -862,20 +937,33 @@ This is usually installed by python package. Check your distribution details.
         if self.isTouchingPoint:
             self.showVignette()
             if self.vc:
-                self.vc.touch(x, y)
-            if self.coordinatesUnit == Unit.DIP:
-                x = round(x / self.device.display['density'], 2)
-                y = round(y / self.device.display['density'], 2)
-            self.printOperation(None, Operation.TOUCH_POINT, x, y, self.coordinatesUnit,
-                                self.device.display['orientation'])
-            self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
-            # FIXME: can we reduce this sleep? (was 5)
-            time.sleep(1)
-            self.isTouchingPoint = self.vc is None
-            self.takeScreenshotAndShowItOnWindow()
-            # self.hideVignette()
-            self.statusBar.clear()
-            return
+                if self.vc.uiAutomatorHelper:
+                    self.vc.uiAutomatorHelper.ui_device.click(int(x), int(y))
+                    self.vc.uiAutomatorHelper.ui_device.wait_for_idle()
+                    self.printOperation(None, Operation.CLICK_UI_AUTOMATOR_HELPER, int(x), int(y))
+                    self.printOperation(None, Operation.WAIT_FOR_IDLE_UI_AUTOMATOR_HELPER)
+                    self.isTouchingPoint = self.vc is None
+                    self.takeScreenshotAndShowItOnWindow()
+                    # self.hideVignette()
+                    self.statusBar.clear()
+                    return
+                else:
+                    self.vc.touch(x, y)
+                    if self.coordinatesUnit == Unit.DIP:
+                        x = round(x / self.device.display['density'], 2)
+                        y = round(y / self.device.display['density'], 2)
+                    self.printOperation(None, Operation.TOUCH_POINT, x, y, self.coordinatesUnit,
+                                        self.device.display['orientation'])
+                    self.sleep(5)
+                    # FIXME: can we reduce this sleep? (was 5)
+                    time.sleep(1)
+                    self.isTouchingPoint = self.vc is None
+                    self.takeScreenshotAndShowItOnWindow()
+                    # self.hideVignette()
+                    self.statusBar.clear()
+                    return
+        else:
+            warnings.warn('isTouchingPoint is False')
 
     def longTouchPoint(self, x, y):
         '''
@@ -908,10 +996,12 @@ This is usually installed by python package. Check your distribution details.
             self.statusBar.clear()
             return
 
-    def longTouchView(self, v, root=None):
+    def longTouchView(self, v: View, root=None) -> None:
+        # FIXME: v.longTouch() handles the 2 cases for CulebraTester2-public and adbclient
+        # also, we should obtain the selector only once
         v.longTouch()
         if v.uiAutomatorHelper:
-            self.printOperation(v, Operation.LONG_TOUCH_VIEW_UI_AUTOMATOR_HELPER, v.obtainSelectorForView())
+            self.printOperation(v, Operation.LONG_TOUCH_VIEW_UI_AUTOMATOR_HELPER, v.obtain_selector())
         else:
             # we pass root=v as an argument so the corresponding findView*() searches in this
             # subtree instead of the full tree
@@ -949,7 +1039,7 @@ This is usually installed by python package. Check your distribution details.
 
     def onCtrlButton1Pressed(self, event):
         if DEBUG:
-            print("onCtrlButton1Pressed((", event.x, ", ", event.y, "))", file=sys.stderr)
+            print(f"onCtrlButton1Pressed(({event.x}, {event.y}))", file=sys.stderr)
         (scaledX, scaledY) = (event.x / self.scale, event.y / self.scale)
         l = self.vc.findViewsContainingPoint((scaledX, scaledY))
         if l and len(l) > 0:
@@ -971,47 +1061,65 @@ This is usually installed by python package. Check your distribution details.
             print("onButton3Pressed((", event.x, ", ", event.y, "))", file=sys.stderr)
         self.showPopupMenu(event)
 
-    def command(self, keycode):
-        '''
+    def command(self, keycode: str) -> None:
+        """
         Presses a key.
         Generates the actual key press on the device and prints the line in the script.
-        '''
 
-        self.device.press(keycode)
-        self.printOperation(None, Operation.PRESS, keycode)
+        :param keycode the keycode name
+        """
+
+        if self.vc.uiAutomatorHelper:
+            try:
+                if not keycode.startswith('KEYCODE_'):
+                    keycode = f'KEYCODE_{keycode}'
+                self.vc.uiAutomatorHelper.ui_device.press_key_code(KEY_EVENT[f'{keycode}'])
+                self.printOperation(None, Operation.PRESS_UI_AUTOMATOR_HELPER, keycode)
+            except Exception as e:
+                print(e, file=sys.stderr)
+        else:
+            self.device.press(keycode)
+            self.printOperation(None, Operation.PRESS, keycode)
 
     def onKeyPressed(self, event):
         if DEBUG_KEY:
             print("onKeyPressed(", repr(event), ")", file=sys.stderr)
-            print("    event", type(event.char), len(event.char), repr(
-                event.char), "keysym=", event.keysym, "keycode=", event.keycode, event.type, "state=", event.state,
+            print(f'    char: type={type(event.char)} len={len(event.char)} repr={repr(event.char)}\n' +
+                  f'    keysym={event.keysym}, keycode={event.keycode}, type={event.type}, state={event.state}',
                   file=sys.stderr)
             print("    events disabled:", self.areEventsDisabled, file=sys.stderr)
         if self.areEventsDisabled:
             if DEBUG_KEY:
-                print("ignoring event", file=sys.stderr)
+                print("    ignoring event", file=sys.stderr)
             self.canvas.update_idletasks()
             return
 
         char = event.char
         keysym = event.keysym
+        state = event.state
+
+        # Manual way to get the modifiers
+        # https://stackoverflow.com/a/34482048/236465
+        ctrl = (state & 0x4) != 0
+        alt = (state & 0x8) != 0 or (state & 0x80) != 0
+        shift = (state & 0x1) != 0
+
+        if ctrl:
+            try:
+                return getattr(self, f'onCtrl{keysym.upper()}')(event)
+            except AttributeError:
+                pass
 
         if len(char) == 0 and not (
                 keysym in Culebron.KEYSYM_TO_KEYCODE_MAP or keysym in Culebron.KEYSYM_CULEBRON_COMMANDS):
             if DEBUG_KEY:
-                print("returning because len(char) == 0", file=sys.stderr)
+                print(f'    returning because len(char) == 0 keysym={keysym}', file=sys.stderr)
             return
 
         ###
         ### internal commands: no output to generated script
         ###
-        try:
-            handler = getattr(self, 'onCtrl%s' % self.UPPERCASE_CHARS[ord(char) - 1])
-        except:
-            handler = None
-        if handler:
-            return handler(event)
-        elif keysym == 'F1':
+        if keysym == 'F1':
             self.showHelp()
             return
         elif keysym == 'F5':
@@ -1052,14 +1160,14 @@ This is usually installed by python package. Check your distribution details.
             else:
                 self.command(Culebron.KEYSYM_TO_KEYCODE_MAP[keysym])
         # ALT-M
-        elif keysym == 'm' and event.state == 24:
+        elif keysym == 'm' and alt:
             if DEBUG_KEY:
                 print("Sending MENU", file=sys.stderr)
             self.command('MENU')
         # OPTION-ENTER (mac)
         elif keysym == 'Return' and event.state == 16:
             if DEBUG_KEY:
-                print >> sys.stderr, "Sending DPAD_CENTER"
+                print("Sending DPAD_CENTER", file=sys.stderr)
             self.command('DPAD_CENTER')
         elif char == '\r':
             self.command('ENTER')
@@ -1067,9 +1175,7 @@ This is usually installed by python package. Check your distribution details.
             # do nothing
             pass
         else:
-            self.command(char.decode('ascii', errors='replace'))
-        # commented out (profile)
-        # time.sleep(1)
+            self.command(char)
         self.takeScreenshotAndShowItOnWindow()
 
     def wake(self):
@@ -1105,7 +1211,10 @@ This is usually installed by python package. Check your distribution details.
             self.toggleGenerateTestCondition()
 
     def printStartActivityAtTop(self):
-        self.printOperation(None, Operation.START_ACTIVITY, self.device.getTopActivityName())
+        if self.vc.uiAutomatorHelper:
+            self.printOperation(None, Operation.START_ACTIVITY_UI_AUTOMATOR_HELPER, self.device.getTopActivityName())
+        else:
+            self.printOperation(None, Operation.START_ACTIVITY, self.device.getTopActivityName())
 
     def onCtrlA(self, event):
         if DEBUG:
@@ -1121,34 +1230,58 @@ This is usually installed by python package. Check your distribution details.
         self.showDragDialog()
 
     def onCtrlF(self, event):
-        self.saveSnapshot()
+        self.saveSnapshot(showDialog=True)
 
-    def saveSnapshot(self):
-        '''
-        Saves the current shanpshot to the specified file.
+    def saveSnapshot(self, showDialog=False):
+        """
+        Saves the current snapshot to the specified file.
         Current snapshot is the image being displayed on the main window.
-        '''
+        """
 
-        filename = self.snapshotDir + os.sep + '${serialno}-${focusedwindowname}-${timestamp}' + '.' + self.snapshotFormat.lower()
-        # We have the snapshot already taken, no need to retake
-        d = FileDialog(self, self.device.substituteDeviceTemplate(filename))
-        saveAsFilename = d.askSaveAsFilename()
+        filename = self.snapshotDir + os.sep + '${serialno}-{pid}-${screenshot_number}-${focusedwindowname}-' \
+                                               '{helper.timestamp()}' + '.' + self.snapshotFormat.lower()
+        # FIXME: without the dialog we may loose the ability of specifying real steps names
+        if showDialog:
+            # We have the snapshot already taken, no need to retake
+            d = FileDialog(self, self.device.substituteDeviceTemplate(filename))
+            saveAsFilename = d.askSaveAsFilename()
+        else:
+            saveAsFilename = filename
         if saveAsFilename:
             _format = os.path.splitext(saveAsFilename)[1][1:].upper()
-            self.printOperation(None, Operation.SNAPSHOT, filename, _format, self.deviceArt, self.dropShadow,
-                                self.screenGlare)
+            if self.vc.uiAutomatorHelper:
+                # FIXME: we should use fields in this class instead of relying on device
+                # FIXME: the screenshot name is generated here and then no re-evaluation of variables take place
+                # when the generated script runs (i.e. if the serialno changes then the filenames will be wrong)
+                # Note that in the other case (no helper), the template is re-evaluated.
+                # Then, it may make more sense to have the template evaluation in ui_device.take_screenshot().
+                # FIXME: we may want to use saveAsFilename as it perhaps was modified in the dialog, but in such case
+                # we may not use variables for f-strings
+                _filename = self.device.substituteDeviceTemplate(saveAsFilename)
+                self.printOperation(None, Operation.SNAPSHOT_UI_AUTOMATOR_HELPER, _filename, _format)
+                # FIXME: we increment here as we dont use device.takeSnapshot() which increments the count
+                self.device.screenshot_number += 1
+            else:
+                self.printOperation(None, Operation.SNAPSHOT, filename, _format, self.deviceArt, self.dropShadow,
+                                    self.screenGlare)
+
             # FIXME: we should add deviceArt, dropShadow and screenGlare to the saved image
             # self.unscaledScreenshot.save(saveAsFilename, _format, self.deviceArt, self.dropShadow, self.screenGlare)
-            self.unscaledScreenshot.save(saveAsFilename, _format)
+            if showDialog:
+                # FIXME: home made f-string
+                saveAsFilename = saveAsFilename.replace('{pid}', str(os.getgid())) \
+                    .replace('{helper.timestamp()}', self.vc.uiAutomatorHelper.timestamp())
+                self.unscaledScreenshot.save(saveAsFilename, _format)
 
     def saveViewSnapshot(self, view):
-        '''
+        """
         Saves the View snapshot.
-        '''
+        """
 
         if not view:
             raise ValueError("view must be provided to take snapshot")
-        filename = self.snapshotDir + os.sep + '${serialno}-' + view.variableNameFromId() + '-${timestamp}' + '.' + self.snapshotFormat.lower()
+        filename = self.snapshotDir + os.sep + '${serialno}-${pid}-' + View.variableNameFromId(
+            view) + '-${timestamp}' + '.' + self.snapshotFormat.lower()
         d = FileDialog(self, self.device.substituteDeviceTemplate(filename))
         saveAsFilename = d.askSaveAsFilename()
         if saveAsFilename:
@@ -1244,10 +1377,10 @@ This is usually installed by python package. Check your distribution details.
         self.window.destroy()
 
     def showSleepDialog(self):
-        seconds = tkinter.simpledialog.askfloat('Sleep Interval', 'Value in seconds:', initialvalue=1, minvalue=0,
-                                                parent=self.window)
-        if seconds is not None:
-            self.printOperation(None, Operation.SLEEP, seconds)
+        secs = tkinter.simpledialog.askfloat('Sleep Interval', 'Value in secs:', initialvalue=1, minvalue=0,
+                                             parent=self.window)
+        if secs is not None:
+            self.sleep(secs, False)
         self.canvas.focus_set()
 
     def onCtrlS(self, event):
@@ -1311,24 +1444,34 @@ This is usually installed by python package. Check your distribution details.
 
     def drag(self, start, end, duration, steps, units=Unit.DIP):
         self.showVignette()
+        x0 = start[0]
+        y0 = start[1]
+        x1 = end[0]
+        y1 = end[1]
+
         # the operation on this current device is always done in PX
         # so let's do it before any conversion takes place
-        self.device.drag(start, end, duration, steps)
-        if units == Unit.DIP:
-            x0 = round(start[0] / self.device.display['density'], 2)
-            y0 = round(start[1] / self.device.display['density'], 2)
-            x1 = round(end[0] / self.device.display['density'], 2)
-            y1 = round(end[1] / self.device.display['density'], 2)
-            start = (x0, y0)
-            end = (x1, y1)
         if self.vc.uiAutomatorHelper:
-            self.printOperation(None, Operation.SWIPE_UI_AUTOMATOR_HELPER, x0, y0, x1, y1, steps, units,
+            self.vc.uiAutomatorHelper.ui_device.swipe(start_x=int(x0), start_y=int(y0), end_x=int(x1), end_y=int(y1),
+                                                      steps=steps)
+            self.vc.uiAutomatorHelper.ui_device.wait_for_idle()
+            self.printOperation(None, Operation.SWIPE_UI_AUTOMATOR_HELPER, x0, y0, x1, y1, steps,
                                 self.device.display['orientation'])
+            self.printOperation(None, Operation.WAIT_FOR_IDLE_UI_AUTOMATOR_HELPER)
         else:
+            self.device.drag(start, end, duration, steps)
+
+            if units == Unit.DIP:
+                x0 = round(start[0] / self.device.display['density'], 2)
+                y0 = round(start[1] / self.device.display['density'], 2)
+                x1 = round(end[0] / self.device.display['density'], 2)
+                y1 = round(end[1] / self.device.display['density'], 2)
+                start = (x0, y0)
+                end = (x1, y1)
+
             self.printOperation(None, Operation.DRAG, start, end, duration, steps, units,
                                 self.device.display['orientation'])
-        self.printOperation(None, Operation.SLEEP, 1)
-        time.sleep(1)
+            self.sleep(1)
         self.takeScreenshotAndShowItOnWindow()
 
     def enableEvents(self):
@@ -1438,8 +1581,7 @@ This is usually installed by python package. Check your distribution details.
         # is executed
         self.printOperation(view, Operation.fromCommandName(command.__name__))
         command()
-        self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
-        self.vc.sleep(5)
+        self.sleep(5)
         # FIXME: perhaps refresh() should be invoked here just in case size or orientation changed
         self.takeScreenshotAndShowItOnWindow()
 
@@ -1704,17 +1846,22 @@ This is usually installed by python package. Check your distribution details.
         self.window.after(5000 if dontinteract or needToSleep else 0, self.concertinaLoopCallback)
 
     def sleepAndRefreshScreen(self):
-        self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
         if DEBUG_CONCERTINA:
             print("CONCERTINA: waiting 5 secs", file=sys.stderr)
-        time.sleep(5)
+        self.sleep(5)
         if DEBUG_CONCERTINA:
             print("CONCERTINA: updating window", file=sys.stderr)
         self.takeScreenshotAndShowItOnWindow()
 
-    def sleep(self, s):
-        time.sleep(s)
-        self.printOperation(None, Operation.SLEEP, s)
+    def sleep(self, secs: float, do_actual_sleep_before: bool = True) -> None:
+        if do_actual_sleep_before:
+            time.sleep(secs)
+        if self.vc.uiAutomatorHelper:
+            # FIXME: we may use this for many cases, but we need to exclude explicit sleeps
+            # self.printOperation(None, Operation.WAIT_FOR_WINDOW_UPDATE_UI_AUTOMATOR_HELPER, secs)
+            self.printOperation(None, Operation.SLEEP_UI_AUTOMATOR_HELPER, secs)
+        else:
+            self.printOperation(None, Operation.SLEEP, secs)
 
     def getViewContainingPointAndLongTouch(self, x, y):
         # FIXME: this method is almost exactly as getViewContainingPointAndTouch()
@@ -1759,8 +1906,7 @@ This is usually installed by python package. Check your distribution details.
         candidate = candidates[0]
         self.longTouchView(candidate, v if candidate != v else None)
 
-        self.printOperation(None, Operation.SLEEP, Operation.DEFAULT)
-        self.vc.sleep(5)
+        self.sleep(5)
         self.takeScreenshotAndShowItOnWindow()
 
 
@@ -1951,6 +2097,8 @@ if TKINTER_AVAILABLE:
             self.transient(self.parent)
             self.culebron.setDragDialogShowed(True)
             self.title("Drag: selecting parameters")
+            self.__grabbing = None
+            self.ok = None
 
             # valid percent substitutions (from the Tk entry man page)
             # %d = Type of action (1=insert, 0=delete, -1 for others)
@@ -2189,7 +2337,7 @@ if TKINTER_AVAILABLE:
 
             items.append(ContextMenu.Command('Drag dialog', 0, 'Ctrl+D', '<Control-D>', culebron.showDragDialog))
             items.append(ContextMenu.Command('Take snapshot and save to file', 26, 'Ctrl+F', '<Control-F>',
-                                             culebron.saveSnapshot))
+                                             lambda: culebron.saveSnapshot(showDialog=True)))
             items.append(ContextMenu.Command('Control Panel', 0, 'Ctrl+K', '<Control-K>', culebron.showControlPanel))
             items.append(ContextMenu.Command('Long touch point using PX', 0, 'Ctrl+L', '<Control-L>',
                                              culebron.toggleLongTouchPoint))
@@ -2300,7 +2448,7 @@ if TKINTER_AVAILABLE:
             self.bind("<Return>", self.onDismiss)
             self.bind("<Escape>", self.onDismiss)
 
-            box.grid(row=1, column=1)
+            box.grid(row=2, column=1)
 
         def onDismiss(self, event=None):
             # put focus back to the parent window's canvas

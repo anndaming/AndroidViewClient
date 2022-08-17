@@ -10,7 +10,7 @@ It is a test framework for Android applications that:
     <li>Provides view-based <i>device independent</i> UI interaction</li>
     <li>Uses 'logical' screen comparison (UI Automator Hierarchy based) over image comparison (Avoiding extraneous 
     detail issues, such as time or data changes)</li>
-    <li>Supports running on multiple devices</li>
+    <li>Supports running concurrently on multiple devices</li>
     <li>Provides simple control for high level operations like language change and activity start</li>
     <li>Supports all Android APIs</li>
     <li>Is written in python (python 3.6+ support in 20.x.y+)</li>
@@ -31,6 +31,12 @@ As of August 2021 we have reached:
 <img src="https://github.com/dtmilano/AndroidViewClient/wiki/images/androidviewclient-culebra-1million.png" alt="culebra 1 million downloads" width="80%" align="center">
 
 Thanks to all who made it possible.
+
+# Installation
+```
+pip3 install androidviewclient --upgrade
+```
+Or check the wiki for more alternatives.
 
 # Want to learn more?
 Detailed information can be found in the [AndroidViewClient/culebra wiki](https://github.com/dtmilano/AndroidViewClient/wiki)

@@ -20,7 +20,7 @@
     '''
 import platform
 
-__version__ = '20.9.1'
+__version__ = '21.16.9'
 
 import tkinter
 import tkinter.ttk
@@ -64,7 +64,7 @@ class ControlPanel(tkinter.Toplevel):
         self.childWindow.row = 0
         if self.isDarwin:
             out = subprocess.check_output(["defaults", "read", "-g", "AppleInterfaceStyle"])
-            self.isDarkMode = ('Dark' in out)
+            self.isDarkMode = ('Dark' in out.decode())
         else:
             self.isDarkMode = False
         if self.isDarkMode:
@@ -105,7 +105,7 @@ class ControlPanel(tkinter.Toplevel):
             'KEYCODE_BOOKMARK',
             'KEYCODE_ZOOM_OUT', 'REFRESH', 'KEYCODE_APP_SWITCH', 'KEYCODE_GOOGLE_NOW', 'KEYCODE_CALL', 'KEYCODE_ESCAPE',
             'KEYCODE_BRIGHTNESS_UP', 'KEYCODE_VOLUME_MUTE', 'KEYCODE_MEDIA_STOP', 'KEYCODE_CALCULATOR',
-            'KEYCODE_SETTINGS', 'QUIT'
+            'KEYCODE_SETTINGS', 'CLOSE'
         ]
         for keycode in _keycodeList:
             _cpb = ControlPanelButton(self.keycodeTab, self.culebron, self.printOperation, value=keycode,
@@ -118,7 +118,7 @@ class ControlPanel(tkinter.Toplevel):
                 _cpb.configure(fg=Color.BLUE, bg=Color.DARK_GRAY, text=keycode, command=_cpb.refreshScreen)
             elif keycode == 'SNAPSHOPT':
                 _cpb.configure(fg=Color.BLUE, bg=Color.DARK_GRAY, text=keycode, command=_cpb.takeSnapshot)
-            elif keycode == 'QUIT':
+            elif keycode == 'CLOSE':
                 _cpb.configure(fg=Color.BLUE, bg=Color.DARK_GRAY, text=keycode, command=self.childWindow.destroy)
             else:
                 _cpb.configure(command=_cpb.command)
@@ -167,7 +167,9 @@ class ControlPanelButton(tkinter.Button):
 
     def command(self):
         key = self.value
-        if key == 'KEYCODE_GOOGLE_NOW':
+        if self.culebron.vc.uiAutomatorHelper:
+            self.culebron.command(key)
+        elif key == 'KEYCODE_GOOGLE_NOW':
             self.device.press(Key.GOOGLE_NOW)
             self.printOperation(None, Operation.PRESS, Key.GOOGLE_NOW)
         elif key == 'KEYCODE_.':
@@ -179,10 +181,11 @@ class ControlPanelButton(tkinter.Button):
         else:
             self.device.press(key)
             self.printOperation(None, Operation.PRESS, key)
+        self.refreshScreen()
 
     def refreshScreen(self):
         self.culebron.refresh()
 
     def takeSnapshot(self):
         # No need to retake snapshot as it is already shown
-        self.culebron.saveSnapshot()
+        self.culebron.saveSnapshot(showDialog=True)

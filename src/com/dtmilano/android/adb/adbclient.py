@@ -1,6 +1,6 @@
 # coding=utf-8
 '''
-Copyright (C) 2012-2018  Diego Torres Milano
+Copyright (C) 2012-2022  Diego Torres Milano
 Created on Dec 1, 2012
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,10 +23,11 @@ from __future__ import print_function
 import subprocess
 import threading
 import unicodedata
+from typing import Optional
 
 from com.dtmilano.android.adb.dumpsys import Dumpsys
 
-__version__ = '20.9.1'
+__version__ = '21.16.9'
 
 import sys
 import warnings
@@ -225,6 +226,9 @@ class AdbClient:
         self.display = {}
         ''' The map containing the device's physical display properties: width, height and density '''
 
+        self.screenshot_number = 1
+        ''' The screenshot number count '''
+
         self.isTransportSet = False
         if settransport and serialno is not None:
             self.__setTransport(timeout=timeout)
@@ -388,7 +392,8 @@ class AdbClient:
 
     def checkVersion(self, ignoreversioncheck=False, reconnect=True):
         if DEBUG:
-            print("checkVersion(reconnect=%s)   ignoreversioncheck=%s" % (reconnect, ignoreversioncheck), file=sys.stderr)
+            print("checkVersion(reconnect=%s)   ignoreversioncheck=%s" % (reconnect, ignoreversioncheck),
+                  file=sys.stderr)
         self.__send('host:version', reconnect=False)
         # HACK: MSG_WAITALL not available on windows
         # version = self.socket.recv(8, socket.MSG_WAITALL)
@@ -574,16 +579,19 @@ class AdbClient:
         raise RuntimeError("Couldn't find display info in 'wm size', 'dumpsys display' or 'dumpsys window'")
 
     def getLogicalDisplayInfo(self):
-        '''
+        """
         Gets C{mDefaultViewport} and then C{deviceWidth} and C{deviceHeight} values from dumpsys.
-        This is a method to obtain display logical dimensions and density
-        '''
+        This is a method to obtain display logical dimensions and density.
+        Obtains the rotation from dumpsys.
+        """
 
         self.__checkTransport()
         logicalDisplayRE = re.compile(
-            '.*DisplayViewport\{valid=true, .*orientation=(?P<orientation>\d+), .*deviceWidth=(?P<width>\d+), deviceHeight=(?P<height>\d+).*')
-        for line in self.shell('dumpsys display').splitlines():
-            m = logicalDisplayRE.search(line, 0)
+            r'.*DisplayViewport\{.*valid=true, .*orientation=(?P<orientation>\d+), .*deviceWidth=(?P<width>\d+), '
+            r'deviceHeight=(?P<height>\d+).*')
+        predictedRotationRE = re.compile(r'.*mPredictedRotation=(?P<rotation>\d).*')
+        for _line in self.shell('dumpsys display').splitlines():
+            m = logicalDisplayRE.search(_line, pos=0)
             if m:
                 self.__displayInfo = {}
                 for prop in ['width', 'height', 'orientation']:
@@ -595,7 +603,14 @@ class AdbClient:
                     else:
                         # No available density information
                         self.__displayInfo[prop] = -1.0
-                return self.__displayInfo
+
+        for _line in self.shell('dumpsys window displays').splitlines():
+            m = predictedRotationRE.search(_line, pos=0)
+            if m:
+                self.__displayInfo['rotation'] = int(m.group('rotation'))
+
+        if self.__displayInfo:
+            return self.__displayInfo
         return None
 
     def getPhysicalDisplayInfo(self):
@@ -849,7 +864,8 @@ class AdbClient:
             if DEBUG:
                 if version == 1:
                     print("    takeSnapshot:", (
-                        version, bpp, size, width, height, roffset, rlen, boffset, blen, goffset, glen, aoffset, alen), file=sys.stderr)
+                        version, bpp, size, width, height, roffset, rlen, boffset, blen, goffset, glen, aoffset, alen),
+                          file=sys.stderr)
                 elif version == 2:
                     print("    takeSnapshot:", (
                         version, bpp, colorspace, width, height, roffset, rlen, boffset, blen, goffset, glen, aoffset,
@@ -919,6 +935,7 @@ class AdbClient:
 
         if PROFILE:
             profileEnd()
+        self.screenshot_number += 1
         return image
 
     def imageToData(self, image, output_type=None):
@@ -952,21 +969,23 @@ class AdbClient:
 
     def touch(self, x, y, orientation=-1, eventType=DOWN_AND_UP):
         if DEBUG_TOUCH:
-            print("touch(x=", x, ", y=", y, ", orientation=", orientation, ", eventType=", eventType, ")", file=sys.stderr)
+            print("touch(x=", x, ", y=", y, ", orientation=", orientation, ", eventType=", eventType, ")",
+                  file=sys.stderr)
         self.__checkTransport()
         if orientation == -1:
             orientation = self.display['orientation']
         version = self.getSdkVersion()
         if version > 10:
             self.shell(
-                'input tap %d %d' % self.__transformPointByOrientation((x, y), orientation, self.display['orientation']))
+                'input tap %d %d' % self.__transformPointByOrientation((x, y), orientation,
+                                                                       self.display['orientation']))
         else:
             raise RuntimeError('drag: API <= 10 not supported (version=%d)' % version)
 
-
     def touchDip(self, x, y, orientation=-1, eventType=DOWN_AND_UP):
         if DEBUG_TOUCH:
-            print("touchDip(x=", x, ", y=", y, ", orientation=", orientation, ", eventType=", eventType, ")", file=sys.stderr)
+            print("touchDip(x=", x, ", y=", y, ", orientation=", orientation, ", eventType=", eventType, ")",
+                  file=sys.stderr)
         self.__checkTransport()
         if orientation == -1:
             orientation = self.display['orientation']
@@ -1082,7 +1101,7 @@ class AdbClient:
 
         self.__checkTransport()
         window_policy = self.shell('dumpsys window policy')
-              
+
         # Deprecated in API 20, removed in API 29
         screenOnRE = re.compile('mScreenOnFully=(true|false)')
         m = screenOnRE.search(window_policy)
@@ -1118,7 +1137,7 @@ class AdbClient:
         size_x1, size_y1 = image1.size
         size_x2, size_y2 = image2.size
         if (size_x1 != size_x2 or
-                    size_y1 != size_y2):
+                size_y1 != size_y2):
             return 0
 
         # Images are the same size
@@ -1214,7 +1233,8 @@ class AdbClient:
 
     def log(self, tag, message, priority='D', verbose=False):
         if DEBUG_LOG:
-            print("log(tag=%s, message=%s, priority=%s, verbose=%s)" % (tag, message, priority, verbose), file=sys.stderr)
+            print("log(tag=%s, message=%s, priority=%s, verbose=%s)" % (tag, message, priority, verbose),
+                  file=sys.stderr)
         self.__checkTransport()
         message = self.substituteDeviceTemplate(message)
         if verbose or priority == 'V':
@@ -1389,8 +1409,23 @@ class AdbClient:
         else:
             return None
 
+    def getTopActivityUri(self) -> Optional[str]:
+        tan = self.getTopActivityName()
+        dat = self.shell('dumpsys activity')
+        startActivityRE = re.compile(r'^\s*mStartActivity:')
+        intentRE = re.compile(f'^\\s*Intent {{ act=(\\S+) dat=(\\S+) flg=(\\S+) cmp={tan} }}')
+        lines = dat.splitlines()
+        for n, _line in enumerate(lines):
+            if startActivityRE.match(_line):
+                for i in range(n, n + 6):
+                    m = intentRE.match(lines[i])
+                    if m:
+                        return m.group(2)
+        return None
+
     def substituteDeviceTemplate(self, template):
         serialno = self.serialno.replace('.', '_').replace(':', '-')
+        pid = os.getpid()
         window_name = self.getFocusedWindowName() or 'no_name'
         focusedWindowName = window_name.replace('/', '-').replace('.', '_')
         timestamp = datetime.datetime.now().isoformat()
@@ -1398,6 +1433,8 @@ class AdbClient:
         if osName.startswith('Windows'):  # ':' not supported in filenames
             timestamp.replace(':', '_')
         _map = {
+            'screenshot_number': f'{self.screenshot_number:04d}',
+            'pid': pid,
             'serialno': serialno,
             'focusedwindowname': focusedWindowName,
             'timestamp': timestamp

@@ -20,7 +20,7 @@ limitations under the License.
 
 from __future__ import print_function
 
-__version__ = '20.9.1'
+__version__ = '21.16.9'
 
 import json
 import os
@@ -30,10 +30,13 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from abc import ABC
+from datetime import datetime
+from typing import Optional, List
 
 import culebratester_client
-from culebratester_client import Text, ObjectRef, StatusResponse
+from culebratester_client import Text, ObjectRef, StatusResponse, DefaultApi
 
 from com.dtmilano.android.adb.adbclient import AdbClient
 from com.dtmilano.android.common import obtainAdbPath
@@ -93,36 +96,41 @@ class UiAutomatorHelper:
     TEST_CLASS = PACKAGE + '.test'
     TEST_RUNNER = 'com.dtmilano.android.uiautomatorhelper.UiAutomatorHelperTestRunner'
 
-    def __init__(self, adbclient, adb=None, localport=9987, remoteport=9987, hostname='localhost'):
+    def __init__(self, adbclient, adb=None, localport=9987, remoteport=9987, hostname='localhost', api_version='v2'):
+        """
+        UiAutomatorHelper constructor used when the backend selected is **CulebraTester2-public**.
+        This class holds references to the different API's:
+         - Device
+         - TargetContext
+         - ObjectStore
+         - UiDevice
+         - UiObject2
+         - Until
+
+        :param adbclient: the adb client
+        :param adb: adb if known
+        :param localport: the local port used in CulebraTester2-public port forwarding
+        :param remoteport: the remote port used in CulebraTester2-public port forwarding
+        :param hostname: the hostname used by CulebraTester2-public
+        :param api_version: the api version
+        """
         self.adbClient = adbclient
         ''' The adb client (a.k.a. device) '''
-        # instrumentation = self.adbClient.shell('pm list instrumentation %s' % self.PACKAGE)
-        # if not instrumentation:
-        #    raise RuntimeError('The target device does not contain the instrumentation for %s' % self.PACKAGE)
-        # if not re.match('instrumentation:%s/%s \(target=%s\)' % (self.TEST_CLASS, self.TEST_RUNNER, self.PACKAGE),
-        #                instrumentation):
-        #    raise RuntimeError('The instrumentation found for %s does not match the expected %s/%s' % (
-        #    self.PACKAGE, self.TEST_CLASS, self.TEST_RUNNER))
         self.adb = self.__whichAdb(adb)
         ''' The adb command '''
         self.osName = platform.system()
         ''' The OS name. We sometimes need specific behavior. '''
         self.isDarwin = (self.osName == 'Darwin')
-        ''' Is it Mac OSX? '''
+        ''' Is it macOS? '''
         self.hostname = hostname
         ''' The hostname we are connecting to. '''
-        # if hostname in ['localhost', '127.0.0.1']:
-        #    self.__redirectPort(localport, remoteport)
-        # self.__runTests()
-        # self.baseUrl = 'http://%s:%d' % (hostname, localport)
-        # try:
-        #    self.session = self.__connectSession()
-        # except RuntimeError as ex:
-        #    self.thread.forceStop()
-        #    raise ex
-        print('⚠️ CulebraTester2 server should have been started and port redirected.', file=sys.stderr)
-        # TODO: localport should be in ApiClient configuration
-        self.api_instance = culebratester_client.DefaultApi(culebratester_client.ApiClient())
+
+        print(
+            f'⚠️  CulebraTester2 server should have been started and localport {localport} redirected to remote port {remoteport}.',
+            file=sys.stderr)
+        configuration = culebratester_client.Configuration()
+        configuration.host = f'http://{hostname}:{localport}/{api_version}'
+        self.api_instance: DefaultApi = culebratester_client.DefaultApi(culebratester_client.ApiClient(configuration))
         self.device: UiAutomatorHelper.Device = UiAutomatorHelper.Device(self)
         self.target_context: UiAutomatorHelper.TargetContext = UiAutomatorHelper.TargetContext(self)
         self.object_store: UiAutomatorHelper.ObjectStore = UiAutomatorHelper.ObjectStore(self)
@@ -192,7 +200,19 @@ class UiAutomatorHelper:
             print("__runTests: end", file=sys.stderr)
 
     def __httpCommand(self, url, params=None, method='GET'):
-        raise RuntimeError("this method should not be used")
+        raise RuntimeError(f"this method should not be used: url={url} params={params} method={method}")
+
+    @staticmethod
+    def timestamp() -> str:
+        """
+        Timestamp in ISO format.
+
+        WARNING: may not be suitable to include in filenames on some platforms as it may include invalid path chars
+        (i.e. `:`).
+
+        :return: the timestamps
+        """
+        return datetime.now().isoformat()
 
     #
     # UiAutomatorHelper internal commands
@@ -243,6 +263,46 @@ class UiAutomatorHelper:
             """
             return self.uiAutomatorHelper.api_instance.device_display_real_size_get()
 
+        def dumpsys(self, service, **kwargs) -> str:
+            """
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param service: the service
+            :return: the dumpsys output
+            """
+            return self.uiAutomatorHelper.api_instance.device_dumpsys_get(service=service, _preload_content=False,
+                                                                          **kwargs).read().decode('UTF-8')
+
+        def get_top_activity_name_and_pid(self) -> Optional[str]:
+            dat = self.dumpsys('activity', arg1='top')
+            activityRE = re.compile(r'\s*ACTIVITY ([A-Za-z0-9_.]+)/([A-Za-z0-9_.\$]+) \w+ pid=(\d+)')
+            m = activityRE.findall(dat)
+            if len(m) > 0:
+                return m[-1]
+            else:
+                warnings.warn("NO MATCH:" + dat)
+                return None
+
+        def get_top_activity_name(self) -> Optional[str]:
+            tanp = self.get_top_activity_name_and_pid()
+            if tanp:
+                return tanp[0] + '/' + tanp[1]
+            else:
+                return None
+
+        def get_top_activity_uri(self) -> Optional[str]:
+            tan = self.get_top_activity_name()
+            dat = self.dumpsys('activity')
+            startActivityRE = re.compile(r'^\s*mStartActivity:')
+            intentRE = re.compile(f'^\\s*Intent {{ act=(\\S+) dat=(\\S+) flg=(\\S+) cmp={tan} }}')
+            lines = dat.splitlines()
+            for n, _line in enumerate(lines):
+                if startActivityRE.match(_line):
+                    for i in range(n, n + 6):
+                        m = intentRE.match(lines[i])
+                        if m:
+                            return m.group(2)
+            return None
+
         def wait_for_new_toast(self, timeout=10000):
             """
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
@@ -255,6 +315,7 @@ class UiAutomatorHelper:
         :deprecated: use uiAutomatorHelper.device.display_real_size()
         :return: the display real size
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.device_display_real_size_get()
 
     #
@@ -268,16 +329,17 @@ class UiAutomatorHelper:
         def __init__(self, uiAutomatorHelper) -> None:
             super().__init__(uiAutomatorHelper)
 
-        def start_activity(self, pkg, cls):
+        def start_activity(self, pkg, cls, **kwargs):
             """
             Starts an activity.
 
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
             :param pkg: the package
             :param cls: the Activity class
+            :param kwargs: uri: the optional URI
             :return: the api response
             """
-            return self.uiAutomatorHelper.api_instance.target_context_start_activity_get(pkg, cls)
+            return self.uiAutomatorHelper.api_instance.target_context_start_activity_get(pkg, cls, **kwargs)
 
     #
     # ObjectStore
@@ -325,20 +387,14 @@ class UiAutomatorHelper:
         def __init__(self, uiAutomatorHelper) -> None:
             super().__init__(uiAutomatorHelper)
 
-        def click(self, **kwargs):
+        def click(self, x: int, y: int):
             """
-            Clicks.
+            Clicks on the specified coordinates.
 
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
-            :param kwargs:
             :return:
             """
-            if self.all(['x', 'y'], kwargs):
-                x = int(kwargs['x'])
-                y = int(kwargs['y'])
-                return self.uiAutomatorHelper.api_instance.ui_device_click_get(x=x, y=y)
-            else:
-                raise ValueError('click: (x, y) must have a value')
+            return self.uiAutomatorHelper.api_instance.ui_device_click_get(x=x, y=y)
 
         def dump_window_hierarchy(self, _format='JSON'):
             """
@@ -353,11 +409,14 @@ class UiAutomatorHelper:
         def find_object(self, **kwargs):
             """
             Finds an object.
+            Invokes GET or POST method depending on the arguments passed.
 
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
             :param kwargs:
             :return:
             """
+            if 'body' in kwargs:
+                return self.uiAutomatorHelper.api_instance.ui_device_find_object_post(**kwargs)
             if self.some(['resource_id', 'ui_selector', 'by_selector'], kwargs):
                 return self.uiAutomatorHelper.api_instance.ui_device_find_object_get(**kwargs)
             body = culebratester_client.Selector(**kwargs)
@@ -366,12 +425,34 @@ class UiAutomatorHelper:
         def find_objects(self, **kwargs):
             """
             Finds objects.
+            Invokes GET or POST method depending on the arguments passed.
 
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
             :param kwargs:
             :return:
             """
-            return self.uiAutomatorHelper.api_instance.ui_device_find_objects_get(**kwargs)
+            if 'body' in kwargs:
+                return self.uiAutomatorHelper.api_instance.ui_device_find_objects_post(**kwargs)
+            if 'by_selector' in kwargs:
+                return self.uiAutomatorHelper.api_instance.ui_device_find_objects_get(**kwargs)
+            body = culebratester_client.Selector(**kwargs)
+            return self.uiAutomatorHelper.api_instance.ui_device_find_objects_post(body=body)
+
+        def has_object(self, **kwargs) -> bool:
+            """
+            Has an object.
+            Invokes GET or POST method depending on the arguments passed.
+
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param kwargs:
+            :return: True or False
+            """
+            if 'body' in kwargs:
+                return self.uiAutomatorHelper.api_instance.ui_device_has_object_post(**kwargs).value
+            if self.some(['resource_id', 'ui_selector', 'by_selector'], kwargs):
+                return self.uiAutomatorHelper.api_instance.ui_device_has_object_get(**kwargs).value
+            body = culebratester_client.Selector(**kwargs)
+            return self.uiAutomatorHelper.api_instance.ui_device_has_object_post(body=body).value
 
         def press_back(self):
             """
@@ -400,6 +481,15 @@ class UiAutomatorHelper:
             """
             return self.uiAutomatorHelper.api_instance.ui_device_press_home_get()
 
+        def press_recent_apps(self):
+            """
+            Press recent apps.
+
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :return:
+            """
+            return self.uiAutomatorHelper.api_instance.ui_device_press_recent_apps_get()
+
         def press_key_code(self, key_code, meta_state=0):
             """
             Presses a key code.
@@ -425,27 +515,39 @@ class UiAutomatorHelper:
             body = culebratester_client.SwipeBody(**kwargs)
             return self.uiAutomatorHelper.api_instance.ui_device_swipe_post(body=body)
 
-        def take_screenshot(self, scale=1.0, quality=90, **kwargs):
+        def take_screenshot(self, scale=1.0, quality=90, filename=None, **kwargs):
             """
             Takes screenshot.
+            Eventually save it in a file specified by filename.
 
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
-            :param scale:
-            :param quality:
-            :param kwargs:
-            :return:
+            :param scale: the scale
+            :param quality: the quality
+            :param filename: if specified the image will be saved in filename
+            :param kwargs: optional arguments
+            :return: the response containing the image binary if the filename was not specified
             """
-            return self.uiAutomatorHelper.api_instance.ui_device_screenshot_get(scale=scale, quality=quality,
-                                                                                _preload_content=False, **kwargs)
+            if filename:
+                img = self.uiAutomatorHelper.api_instance.ui_device_screenshot_get(scale=scale,
+                                                                                   quality=quality,
+                                                                                   _preload_content=False,
+                                                                                   **kwargs).read()
+                with open(filename, 'wb') as file:
+                    file.write(img)
+                return
+            return self.uiAutomatorHelper.api_instance.ui_device_screenshot_get(scale=scale,
+                                                                                quality=quality,
+                                                                                _preload_content=False,
+                                                                                **kwargs)
 
-        def wait(self, search_condition_ref: int, timeout=10000):
+        def wait(self, oid: int, timeout=10000):
             """
 
-            :param search_condition_ref: the search condition ref (oid)
+            :param oid: the search condition ref (oid)
             :param timeout: the timeout in ms
             :return:
             """
-            return self.uiAutomatorHelper.api_instance.ui_device_wait_get(search_condition_ref=search_condition_ref,
+            return self.uiAutomatorHelper.api_instance.ui_device_wait_get(oid=oid,
                                                                           timeout=timeout)
 
         def wait_for_idle(self, **kwargs):
@@ -457,6 +559,17 @@ class UiAutomatorHelper:
             :return:
             """
             return self.uiAutomatorHelper.api_instance.ui_device_wait_for_idle_get(**kwargs)
+
+        def wait_for_window_update(self, timeout=5000, **kwargs):
+            """
+            Waits for window update.
+
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param timeout: the timeout
+            :param kwargs:
+            :return:
+            """
+            return self.uiAutomatorHelper.api_instance.ui_device_wait_for_window_update_get(timeout, **kwargs)
 
     #
     # UiObject2
@@ -508,7 +621,16 @@ class UiAutomatorHelper:
             :param oid: the oid
             :return: the content
             """
-            return self.uiAutomatorHelper.api_instance.ui_object2_dump_get(oid=oid)
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_dump_get(oid=oid)
+
+        def get_content_description(self, oid):
+            """
+            Returns the content description for this object.
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param oid: the oid
+            :return: the text
+            """
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_get_content_description_get(oid=oid)
 
         def get_text(self, oid):
             """
@@ -526,7 +648,7 @@ class UiAutomatorHelper:
             :param oid: the oid
             :return: the result of the operation
             """
-            return self.uiAutomatorHelper.api_instance.ui_object2_long_click_get(oid=oid)
+            return self.uiAutomatorHelper.api_instance.ui_object2_oid_long_click_get(oid=oid)
 
         def set_text(self, oid, text):
             """
@@ -545,15 +667,35 @@ class UiAutomatorHelper:
         def __init__(self, uiAutomatorHelper) -> None:
             super().__init__(uiAutomatorHelper)
 
-        def find_object(self, by_selector: str) -> ObjectRef:
+        def find_object(self, **kwargs) -> ObjectRef:
             """
             Returns a SearchCondition that is satisfied when at least one element matching the selector can be found.
             The condition will return the first matching element.
             :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
-            :param by_selector: the selector
+            :param kwargs: the arguments
             :return: the search condition reference
             """
-            return self.uiAutomatorHelper.api_instance.until_find_object_get(by_selector=by_selector)
+            if 'body' in kwargs:
+                return self.uiAutomatorHelper.api_instance.until_find_object_post(**kwargs)
+            if 'by_selector' in kwargs:
+                return self.uiAutomatorHelper.api_instance.until_find_object_get(**kwargs)
+            body = culebratester_client.Selector(**kwargs)
+            return self.uiAutomatorHelper.api_instance.until_find_object_post(body=body)
+
+        def find_objects(self, **kwargs) -> List[ObjectRef]:
+            """
+            Returns a SearchCondition that is satisfied when at least one element matching the selector can be found.
+            The condition will return the first matching element.
+            :see https://github.com/dtmilano/CulebraTester2-public/blob/master/openapi.yaml
+            :param kwargs: the arguments
+            :return: the search condition reference
+            """
+            if 'body' in kwargs:
+                return self.uiAutomatorHelper.api_instance.until_find_objects_post(**kwargs)
+            if 'by_selector' in kwargs:
+                return self.uiAutomatorHelper.api_instance.until_find_objects_get(**kwargs)
+            body = culebratester_client.Selector(**kwargs)
+            return self.uiAutomatorHelper.api_instance.until_find_objects_post(body=body)
 
         def new_window(self) -> ObjectRef:
             """
@@ -569,6 +711,7 @@ class UiAutomatorHelper:
         :param kwargs:
         :return:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         params = kwargs
         if not (('x' in params and 'y' in params) or 'oid' in params):
             raise RuntimeError('click: (x, y) or oid must have a value')
@@ -584,24 +727,28 @@ class UiAutomatorHelper:
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_dump_window_hierarchy_get(format='JSON')
 
     def findObject(self, **kwargs):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_find_object_get(**kwargs)
 
     def findObjects(self, **kwargs):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_find_objects_get(**kwargs)
 
     def longClick(self, **kwargs):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         params = kwargs
         if not (('x' in params and 'y' in params) or 'oid' in params):
             raise RuntimeError('longClick: (x, y) or oid must have a value')
@@ -615,42 +762,49 @@ class UiAutomatorHelper:
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.__httpCommand('/UiDevice/openNotification')
 
     def openQuickSettings(self):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.__httpCommand('/UiDevice/openQuickSettings')
 
     def pressBack(self):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_press_back_get()
 
     def pressHome(self):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_press_home_get()
 
     def pressKeyCode(self, keyCode, metaState=0):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_press_key_code_get(key_code=keyCode, meta_state=metaState)
 
     def pressRecentApps(self):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.__httpCommand('/UiDevice/pressRecentApps')
 
     def swipe(self, startX=-1, startY=-1, endX=-1, endY=-1, steps=10, segments=None, segmentSteps=5):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         if segments is None:
             segments = []
         if startX != -1 and startY != -1:
@@ -667,12 +821,14 @@ class UiAutomatorHelper:
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_device_screenshot_get(scale=scale, quality=quality, **kwargs)
 
     def waitForIdle(self, timeout):
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         params = {'timeout': timeout}
         return self.api_instance.ui_device_wait_for_idle_get(**params)
 
@@ -683,6 +839,7 @@ class UiAutomatorHelper:
         """
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         body = {'text': text}
         return self.api_instance.ui_object2_oid_set_text_post(body, oid)
 
@@ -695,10 +852,12 @@ class UiAutomatorHelper:
         :param timeout:
         :return:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         params = {'eventCondition': eventCondition, 'timeout': timeout}
         return self.__httpCommand('/UiObject2/%d/clickAndWait' % uiObject2.oid, params)
 
     def getText(self, oid):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.api_instance.ui_object2_oid_get_text_get(oid)
 
     def isChecked(self, uiObject=None):
@@ -708,6 +867,7 @@ class UiAutomatorHelper:
         :param uiObject:
         :return:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         # This path works for UiObject and UiObject2, so there's no need to handle both cases differently
         path = '/UiObject/%d/isChecked' % uiObject.oid
         response = self.__httpCommand(path, None)
@@ -720,6 +880,7 @@ class UiAutomatorHelper:
     # UiScrollable
     #
     def uiScrollable(self, path, params=None):
+        warnings.warn("Deprecated: will be removed in future versions")
         response = self.__httpCommand('/UiScrollable/' + path, params)
         if DEBUG:
             print("UiAutomatorHelper: uiScrollable: response=", response, file=sys.stderr)
@@ -748,26 +909,33 @@ class UiObject:
     """
 
     def __init__(self, uiAutomatorHelper, oid, response):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper = uiAutomatorHelper
         self.oid = oid
         self.className = response['className']
 
     def getOid(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.oid
 
     def getClassName(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.className
 
     def click(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.click(oid=self.oid)
 
     def longClick(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.longClick(oid=self.oid)
 
     def getText(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.getText(uiObject=self)
 
     def setText(self, text):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.setText(uiObject=self, text=text)
 
 
@@ -775,16 +943,19 @@ class UiObject2:
     """
     A UiObject2 represents a UI element. Unlike UiObject, it is bound to a particular view instance and can become
     stale.
+    :deprecated:
     """
 
     def __init__(self, uiAutomatorHelper: UiAutomatorHelper, class_name: str, oid: int):
         """
         Constructor.
 
+        :deprecated:
         :param uiAutomatorHelper: the uiAutomatorHelper instance.
         :param class_name: the class name of the UI object
         :param oid: the object id
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper = uiAutomatorHelper
         self.class_name = class_name
         self.oid = oid
@@ -792,44 +963,56 @@ class UiObject2:
     def clear(self):
         """
         Clears the text content if this object is an editable field.
+        :deprecated:
         :return: the result of the operation
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.clear(oid=self.oid)
 
     def click(self):
         """
         Clicks on this object.
+        :deprecated:
         :return: the result of the operation
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.click(oid=self.oid)
 
     def dump(self):
         """
         Dumps the content of the object/
+        :deprecated:
         :return: the content of the object
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.dump(oid=self.oid)
 
     def get_text(self):
         """
+        :deprecated:
         Returns the text value for this object.
         :return: the text
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.get_text(oid=self.oid)
 
     def long_click(self):
         """
         Performs a long click on this object.
+        :deprecated:
         :return: the result of the operation
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.long_click(oid=self.oid)
 
     def set_text(self, text):
         """
         Sets the text content if this object is an editable field.
+        :deprecated:
         :param text: the text
         :return: the result of the operation
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.ui_object2.set_text(oid=self.oid, text=text)
 
     def clickAndWait(self, eventCondition, timeout):
@@ -839,6 +1022,7 @@ class UiObject2:
         :param timeout:
         :return:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.clickAndWait(uiObject2=self, eventCondition=eventCondition, timeout=timeout)
 
     def isChecked(self):
@@ -847,6 +1031,7 @@ class UiObject2:
         :deprecated:
         :rtype: bool
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.isChecked(uiObject=self)
 
     def longClick(self):
@@ -854,6 +1039,7 @@ class UiObject2:
 
         :deprecated:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.longClick(oid=self.oid)
 
     def getText(self):
@@ -862,6 +1048,7 @@ class UiObject2:
         :deprecated:
         :return:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         # NOTICE: even if this is an uiObject2 we are invoking the only "getText" method in UiAutomatorHelper
         # passing the uiObject2 as uiObject
         return self.uiAutomatorHelper.getText(uiObject=self)
@@ -872,6 +1059,7 @@ class UiObject2:
         :deprecated:
         :param text:
         """
+        warnings.warn("Deprecated: will be removed in future versions")
         # NOTICE: even if this is an uiObject2 we are invoking the only "setText" method in UiAutomatorHelper
         # passing the uiObject2 as uiObject
         self.uiAutomatorHelper.setText(uiObject=self, text=text)
@@ -879,26 +1067,33 @@ class UiObject2:
 
 class UiScrollable:
     def __init__(self, uiAutomatorHelper, uiSelector):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper = uiAutomatorHelper
         self.uiSelector = uiSelector
         self.oid, self.response = self.__createUiScrollable()
 
     def __createUiScrollable(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.uiScrollable('new', {'uiSelector': self.uiSelector})
 
     def flingBackward(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/flingBackward')
 
     def flingForward(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/flingForward')
 
     def flingToBeginning(self, maxSwipes=20):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/flingToBeginning', {'maxSwipes': maxSwipes})
 
     def flingToEnd(self, maxSwipes=20):
+        warnings.warn("Deprecated: will be removed in future versions")
         return self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/flingToEnd', {'maxSwipes': maxSwipes})
 
     def getChildByDescription(self, uiSelector, description, allowScrollSearch):
+        warnings.warn("Deprecated: will be removed in future versions")
         oid, response = self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/getChildByDescription',
                                                             {'uiSelector': uiSelector,
                                                              'contentDescription': description,
@@ -906,15 +1101,18 @@ class UiScrollable:
         return UiObject(self.uiAutomatorHelper, oid, response)
 
     def getChildByText(self, uiSelector, text, allowScrollSearch):
+        warnings.warn("Deprecated: will be removed in future versions")
         oid, response = self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/getChildByText',
                                                             {'uiSelector': uiSelector, 'text': text,
                                                              'allowScrollSearch': allowScrollSearch})
         return UiObject(self.uiAutomatorHelper, oid, response)
 
     def setAsHorizontalList(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/setAsHorizontalList')
         return self
 
     def setAsVerticalList(self):
+        warnings.warn("Deprecated: will be removed in future versions")
         self.uiAutomatorHelper.uiScrollable(str(self.oid) + '/setAsVerticalList')
         return self
